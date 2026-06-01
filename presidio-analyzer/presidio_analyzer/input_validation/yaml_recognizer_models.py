@@ -347,9 +347,17 @@ class RecognizerRegistryConfig(BaseModel):
         default=None, description="List of supported languages"
     )
     global_regex_flags: int = Field(default=26, description="Global regex flags")
+    # Each concrete ``PredefinedRecognizerConfig`` subclass with extra fields must
+    # be present in this union. Pydantic serializes a union member using the schema
+    # of the matched type, so a subclass that is absent from the union is dumped via
+    # its base schema, silently dropping its extra fields (model_name,
+    # entity_mapping, threshold, ...) when the registry configuration is
+    # re-serialized in ``ConfigurationValidator``. (Smart-union matches by type, not
+    # position; listing subclasses before their base is convention, not required.)
     recognizers: List[
         Union[
             HuggingFaceRecognizerConfig,
+            GLiNERRecognizerConfig,
             PredefinedRecognizerConfig,
             CustomRecognizerConfig,
             str,

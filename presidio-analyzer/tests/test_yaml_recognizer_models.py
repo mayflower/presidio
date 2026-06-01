@@ -757,6 +757,39 @@ def test_gliner_recognizer_config_entity_mapping_and_supported_entities_mutually
         )
 
 
+def test_gliner_fields_survive_registry_config_model_dump():
+    """Guard the union membership: the registry-level model_dump (used by
+    ConfigurationValidator) must not drop GLiNER extra fields.
+
+    GLiNERRecognizerConfig must be present in the RecognizerRegistryConfig
+    .recognizers union; otherwise Pydantic serializes it via its base
+    (PredefinedRecognizerConfig) schema and silently drops model_name/
+    entity_mapping/threshold when the registry configuration is re-serialized.
+    """
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        RecognizerRegistryConfig,
+    )
+
+    registry = RecognizerRegistryConfig(
+        supported_languages=["en"],
+        recognizers=[
+            {
+                "name": "GLiNERRecognizer",
+                "type": "predefined",
+                "supported_language": "en",
+                "model_name": "urchade/gliner_multi_pii-v1",
+                "threshold": 0.35,
+                "entity_mapping": {"person": "PERSON"},
+            }
+        ],
+    )
+
+    dumped = registry.model_dump()["recognizers"][0]
+    assert dumped["model_name"] == "urchade/gliner_multi_pii-v1"
+    assert dumped["threshold"] == 0.35
+    assert dumped["entity_mapping"] == {"person": "PERSON"}
+
+
 def test_huggingface_recognizer_config_model_dump_excludes_none():
     """Test that HuggingFaceRecognizerConfig.model_dump excludes None fields by default."""
     from presidio_analyzer.input_validation.yaml_recognizer_models import (
