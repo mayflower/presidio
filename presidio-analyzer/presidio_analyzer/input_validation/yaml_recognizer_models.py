@@ -240,6 +240,15 @@ class GLiNER2RecognizerConfig(PredefinedRecognizerConfig):
         None,
         description="Query ad-hoc labels for requested entities not in the mapping",
     )
+    label_thresholds: Optional[Dict[str, float]] = Field(
+        None, description="Per-model-label minimum confidence (post-filter)"
+    )
+    label_selection_strategy: Optional[str] = Field(
+        None, description="Which model labels to query per analyze() call"
+    )
+    model_threshold: Optional[float] = Field(
+        None, description="Confidence threshold passed to extract_entities"
+    )
 
     @model_validator(mode="after")
     def validate_entity_mapping_and_supported_entities(self):

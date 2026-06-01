@@ -474,7 +474,10 @@ def test_docs_python_blocks_are_syntactically_valid():
 def test_adhoc_requested_label_is_added_to_schema(mock_gliner2):
     """__create_input_labels: a requested entity absent from the mapping is queried."""
     mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
-    recognizer = GLiNER2Recognizer(entity_mapping={"email": "EMAIL_ADDRESS"})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS"},
+        label_selection_strategy="all_configured",
+    )
 
     recognizer.analyze("text", ["CUSTOM_LABEL"])
 
@@ -526,6 +529,7 @@ def test_label_descriptions_overlay_keeps_adhoc_labels(mock_gliner2):
     recognizer = GLiNER2Recognizer(
         entity_mapping={"email": "EMAIL_ADDRESS"},
         label_descriptions={"email": "an email address"},
+        label_selection_strategy="all_configured",
     )
 
     recognizer.analyze("text", ["CUSTOM_LABEL"])
@@ -618,6 +622,140 @@ def test_chunk_overlap_entity_is_deduplicated(mock_gliner2):
     assert len(results) == 1  # deduplicated to a single result
     assert text[results[0].start:results[0].end] == "Dr. Smith"
     assert results[0].score == 0.95  # highest-scoring duplicate kept
+
+
+# ---------------------------------------------------------------------------
+# Precision controls: label_selection_strategy / label_thresholds / model_threshold
+# ---------------------------------------------------------------------------
+
+PERSON_LABELS = {"person", "full_name", "first_name", "middle_name", "last_name"}
+
+
+def test_requested_presidio_entities_passes_only_person_labels(mock_gliner2):
+    """Default strategy: requesting PERSON queries only person/name labels."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"person": []})
+    recognizer = GLiNER2Recognizer()  # built-in mapping, default strategy
+
+    recognizer.analyze("text", ["PERSON"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]
+    assert set(schema) == PERSON_LABELS
+    for unrelated in ("email", "phone_number", "iban", "ip_address"):
+        assert unrelated not in schema
+
+
+def test_requested_presidio_entities_passes_only_username(mock_gliner2):
+    """Default strategy: requesting USERNAME queries only the username label."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"username": []})
+    recognizer = GLiNER2Recognizer()
+
+    recognizer.analyze("text", ["USERNAME"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    assert set(args[1]) == {"username"}
+
+
+def test_requested_presidio_entities_no_request_falls_back_to_all(mock_gliner2):
+    """With no requested entities, the default strategy queries all labels."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS", "person": "PERSON"}
+    )
+
+    recognizer.analyze("text", [])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    assert set(args[1]) == {"email", "person"}
+
+
+def test_all_configured_preserves_old_behavior(mock_gliner2):
+    """all_configured queries every configured label regardless of the request."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"person": []})
+    recognizer = GLiNER2Recognizer(label_selection_strategy="all_configured")
+
+    recognizer.analyze("text", ["PERSON"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]
+    assert {"email", "iban", "person", "phone_number"} <= set(schema)
+    assert len(schema) == len(GLINER2_PII_ENTITY_MAPPING)
+
+
+def test_configured_ner_only_ignores_adhoc_entities(mock_gliner2):
+    """configured_ner_only queries exactly the configured labels (no ad-hoc)."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS"},
+        label_selection_strategy="configured_ner_only",
+    )
+
+    recognizer.analyze("text", ["EMAIL_ADDRESS", "CUSTOM_LABEL"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    assert set(args[1]) == {"email"}
+
+
+def test_per_label_threshold_drops_low_person_keeps_high_username(mock_gliner2):
+    """A per-label threshold drops a low-score person but keeps a username."""
+    mock_gliner2.extract_entities.return_value = _entities_payload(
+        {
+            "person": [{"text": "x", "confidence": 0.6, "start": 0, "end": 1}],
+            "username": [{"text": "y", "confidence": 0.5, "start": 2, "end": 3}],
+        }
+    )
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"person": "PERSON", "username": "USERNAME"},
+        label_thresholds={"person": 0.9, "username": 0.4},
+        label_selection_strategy="all_configured",
+    )
+
+    results = recognizer.analyze("x y here", ["PERSON", "USERNAME"])
+
+    assert {r.entity_type for r in results} == {"USERNAME"}
+
+
+def test_model_threshold_is_lower_than_per_label_thresholds(mock_gliner2):
+    """The model is queried at the lowest of threshold/per-label thresholds."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"person": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"person": "PERSON", "username": "USERNAME"},
+        threshold=0.5,
+        label_thresholds={"person": 0.9, "username": 0.4},
+    )
+
+    recognizer.analyze("text", ["PERSON", "USERNAME"])
+
+    _, kwargs = mock_gliner2.extract_entities.call_args
+    assert kwargs["threshold"] == 0.4  # min(0.5, min(0.9, 0.4))
+    assert all(kwargs["threshold"] <= t for t in (0.9, 0.4))
+
+
+def test_explicit_model_threshold_overrides_label_thresholds(mock_gliner2):
+    """An explicit model_threshold takes precedence over the derived minimum."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS"},
+        threshold=0.5,
+        label_thresholds={"email": 0.4},
+        model_threshold=0.1,
+    )
+
+    recognizer.analyze("text", ["EMAIL_ADDRESS"])
+
+    _, kwargs = mock_gliner2.extract_entities.call_args
+    assert kwargs["threshold"] == 0.1
+
+
+def test_invalid_label_selection_strategy_raises():
+    """An unknown label_selection_strategy is rejected at construction."""
+    with patch(f"{GLINER2_MODULE}.GLiNER2") as mock_cls:
+        mock_cls.from_pretrained.return_value = MagicMock()
+        with pytest.raises(ValueError):
+            GLiNER2Recognizer(
+                entity_mapping={"email": "EMAIL_ADDRESS"},
+                label_selection_strategy="bogus",
+            )
 
 
 # ---------------------------------------------------------------------------

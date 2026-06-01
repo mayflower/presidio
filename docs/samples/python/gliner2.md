@@ -37,7 +37,10 @@ pip install presidio-anonymizer
     configuration and runs only after you add it to the registry. The default
     `threshold` (0.5) is a starting point — **calibrate it on your own data**.
     A lower threshold increases recall (more detections, more false positives);
-    a higher threshold increases precision.
+    a higher threshold increases precision. For finer control, set
+    `label_thresholds` (a per-label minimum confidence) to tighten noisy labels
+    such as `person`/`phone_number` without lowering recall on clean ones, and
+    `label_selection_strategy` to limit which labels the model is asked for.
 
 ## Entity mapping
 
@@ -164,6 +167,14 @@ recognizers:
     model_name: "fastino/gliner2-privacy-filter-PII-multi"
     threshold: 0.5
     map_location: "cpu"
+    # Only query the model for the labels mapped to the requested entities
+    # (default). Use "all_configured" to query every label.
+    label_selection_strategy: "requested_presidio_entities"
+    # Per-label minimum confidence: raise precision on noisy labels without
+    # lowering recall on clean ones. Labels without an entry use `threshold`.
+    label_thresholds:
+      person: 0.85
+      phone_number: 0.7
     entity_mapping:
       email: "EMAIL_ADDRESS"
       phone_number: "PHONE_NUMBER"

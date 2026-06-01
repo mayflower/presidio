@@ -1,7 +1,7 @@
 import json
 import logging
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, List, Literal, Mapping, Optional
 
 from presidio_analyzer import (
     AnalysisExplanation,
@@ -26,6 +26,19 @@ logger = logging.getLogger("presidio-analyzer")
 #: It is *not* compatible with the ``gliner`` library used by
 #: :class:`GLiNERRecognizer`; it requires the ``gliner2`` library.
 DEFAULT_GLINER2_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
+
+#: Valid values for ``GLiNER2Recognizer(label_selection_strategy=...)``. They
+#: control which model labels are sent to the model at ``analyze()`` time:
+#: ``"all_configured"`` queries every configured label (the original behavior);
+#: ``"requested_presidio_entities"`` queries only configured labels whose mapped
+#: Presidio entity was requested (falling back to all configured when nothing is
+#: requested); ``"configured_ner_only"`` queries exactly the configured labels
+#: and never appends ad-hoc requested entities.
+LABEL_SELECTION_STRATEGIES = (
+    "all_configured",
+    "requested_presidio_entities",
+    "configured_ner_only",
+)
 
 #: Built-in mapping from the 42 PII labels emitted by
 #: ``fastino/gliner2-privacy-filter-PII-multi`` to Presidio entity types.
@@ -126,6 +139,13 @@ class GLiNER2Recognizer(LocalRecognizer):
         map_location: Optional[str] = None,
         label_descriptions: Optional[Dict[str, str]] = None,
         add_requested_entities: bool = True,
+        label_thresholds: Optional[Dict[str, float]] = None,
+        label_selection_strategy: Literal[
+            "all_configured",
+            "requested_presidio_entities",
+            "configured_ner_only",
+        ] = "requested_presidio_entities",
+        model_threshold: Optional[float] = None,
         text_chunker: Optional[BaseTextChunker] = None,
         **model_kwargs,
     ):
@@ -163,6 +183,25 @@ class GLiNER2Recognizer(LocalRecognizer):
             the recognizer strictly within ``entity_mapping`` — useful in a mixed
             registry where other recognizers (e.g. regex/checksum ones) own those
             entity types, so GLiNER2 does not also try to detect them.
+        :param label_thresholds: Optional per-model-label minimum confidence
+            (e.g. ``{"person": 0.85, "username": 0.4}``). A match is kept only if
+            its confidence is >= the label's threshold; labels without an entry
+            fall back to ``threshold``. Lets you raise precision on noisy labels
+            (person/name, phone) without lowering recall on clean ones.
+        :param label_selection_strategy: Controls which model labels are queried
+            for a given ``analyze()`` call (see :data:`LABEL_SELECTION_STRATEGIES`).
+            ``"requested_presidio_entities"`` (default) queries only configured
+            labels whose mapped Presidio entity is in the requested ``entities``
+            (improving precision by not asking the model for unrequested types),
+            falling back to all configured labels when nothing is requested.
+            ``"all_configured"`` reproduces the original behavior (all configured
+            labels). ``"configured_ner_only"`` queries exactly the configured
+            labels and never appends ad-hoc requested entities.
+        :param model_threshold: Optional confidence threshold passed to the model's
+            ``extract_entities``. If None and ``label_thresholds`` are set, the
+            model is queried at ``min(threshold, min(label_thresholds.values()))``
+            so no candidate is pre-filtered below a label's cutoff (the per-label
+            cutoffs are then applied as a post-filter); otherwise ``threshold``.
         :param text_chunker: Custom text chunking strategy. If None, uses
             CharacterBasedTextChunker with default settings (chunk_size=250,
             chunk_overlap=50)
@@ -200,10 +239,36 @@ class GLiNER2Recognizer(LocalRecognizer):
             map_location if map_location is not None else device_detector.get_device()
         )
 
+        # A YAML/no-code config passes unset fields as None; treat that as the
+        # default (matching how the other optional config fields behave).
+        if label_selection_strategy is None:
+            label_selection_strategy = "requested_presidio_entities"
+        if label_selection_strategy not in LABEL_SELECTION_STRATEGIES:
+            raise ValueError(
+                "label_selection_strategy must be one of "
+                f"{LABEL_SELECTION_STRATEGIES}, got {label_selection_strategy!r}"
+            )
+
         self.threshold = threshold
         self.label_descriptions = label_descriptions
         self.add_requested_entities = add_requested_entities
+        self.label_thresholds = dict(label_thresholds) if label_thresholds else {}
+        self.label_selection_strategy = label_selection_strategy
+        self.model_threshold = model_threshold
         self.model_kwargs = model_kwargs
+
+        # Threshold passed to the model's ``extract_entities``. When per-label
+        # thresholds are used we query the model at the lowest of them (and the
+        # base threshold) so no candidate is pre-filtered below a label's cutoff;
+        # the per-label cutoffs are then re-applied as a post-filter in analyze().
+        if model_threshold is not None:
+            self._model_query_threshold = model_threshold
+        elif self.label_thresholds:
+            self._model_query_threshold = min(
+                self.threshold, min(self.label_thresholds.values())
+            )
+        else:
+            self._model_query_threshold = self.threshold
 
         # Use provided chunker or default to in-house character-based chunker
         if text_chunker is not None:
@@ -277,7 +342,7 @@ class GLiNER2Recognizer(LocalRecognizer):
             raw_predictions = self.gliner2.extract_entities(
                 text,
                 schema,
-                threshold=self.threshold,
+                threshold=self._model_query_threshold,
                 include_confidence=True,
                 include_spans=True,
             )
@@ -339,6 +404,14 @@ class GLiNER2Recognizer(LocalRecognizer):
                         score = self.threshold
                     score = float(score)
 
+                    # Per-label precision control: drop matches below the label's
+                    # own threshold (falling back to the base threshold).
+                    effective_threshold = self.label_thresholds.get(
+                        label, self.threshold
+                    )
+                    if score < effective_threshold:
+                        continue
+
                     analysis_explanation = AnalysisExplanation(
                         recognizer=self.name,
                         original_score=score,
@@ -366,22 +439,41 @@ class GLiNER2Recognizer(LocalRecognizer):
         return predictions
 
     def __create_input_labels(self, entities):
-        """Build the model label list, including ad-hoc requested entities.
+        """Build the model label list according to ``label_selection_strategy``.
 
-        Starts from the configured model labels and appends each requested
-        entity that is neither a known model label nor an already-mapped
-        Presidio entity value, so callers can request ad-hoc labels the model
-        was not explicitly configured for. Disabled when
-        ``add_requested_entities`` is False (keeps the recognizer scoped to
-        ``entity_mapping``).
+        - ``"requested_presidio_entities"``: keep only configured model labels
+          whose mapped Presidio entity is in ``entities``; if no entities are
+          requested, keep all configured labels.
+        - ``"all_configured"`` / ``"configured_ner_only"``: keep all configured
+          labels.
+
+        Then, unless the strategy is ``"configured_ner_only"`` or
+        ``add_requested_entities`` is False, append each requested entity that is
+        neither a known model label nor an already-mapped Presidio entity value
+        (ad-hoc / zero-shot labels). An empty result falls back to all configured
+        labels so the model is never queried with an empty schema.
         """
-        labels = list(self.gliner2_labels)
-        if not self.add_requested_entities:
-            return labels
-        for entity in entities:
-            if (
-                entity not in self.model_to_presidio_entity_mapping.values()
-                and entity not in self.gliner2_labels
-            ):
-                labels.append(entity)
+        if self.label_selection_strategy == "requested_presidio_entities" and entities:
+            labels = [
+                label
+                for label in self.gliner2_labels
+                if str(self.model_to_presidio_entity_mapping.get(label, label))
+                in entities
+            ]
+        else:
+            labels = list(self.gliner2_labels)
+
+        if self.add_requested_entities and (
+            self.label_selection_strategy != "configured_ner_only"
+        ):
+            for entity in entities:
+                if (
+                    entity not in self.model_to_presidio_entity_mapping.values()
+                    and entity not in self.gliner2_labels
+                ):
+                    labels.append(entity)
+
+        # Never query the model with an empty schema.
+        if not labels:
+            labels = list(self.gliner2_labels)
         return labels
