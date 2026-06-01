@@ -826,13 +826,13 @@ def test_gliner2_recognizer_config_entity_mapping_and_supported_entities_mutuall
 
 
 def test_gliner2_fields_survive_registry_config_model_dump():
-    """Guard the union ordering: the registry-level model_dump (used by
+    """Guard the union membership: the registry-level model_dump (used by
     ConfigurationValidator) must not drop GLiNER2 extra fields.
 
-    If GLiNER2RecognizerConfig were placed after PredefinedRecognizerConfig in
-    the RecognizerRegistryConfig.recognizers union, Pydantic would serialize it
-    via the base schema and silently drop model_name/entity_mapping/threshold/
-    label_descriptions -- the exact bug the union ordering fixes.
+    If GLiNER2RecognizerConfig were absent from the RecognizerRegistryConfig
+    .recognizers union, Pydantic would serialize it via its base
+    (PredefinedRecognizerConfig) schema and silently drop model_name/
+    entity_mapping/threshold/label_descriptions -- the exact bug this fixes.
     """
     from presidio_analyzer.input_validation.yaml_recognizer_models import (
         RecognizerRegistryConfig,

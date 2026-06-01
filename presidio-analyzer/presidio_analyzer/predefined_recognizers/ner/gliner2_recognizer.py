@@ -32,6 +32,11 @@ DEFAULT_GLINER2_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 #: Used as the default when neither ``entity_mapping`` nor
 #: ``supported_entities`` is provided. Pass a custom ``entity_mapping`` to
 #: override it (e.g. to use a different model or your own entity names).
+#: Many values reuse Presidio's standard entities (PERSON, EMAIL_ADDRESS,
+#: PHONE_NUMBER, LOCATION, CREDIT_CARD, IBAN_CODE, IP_ADDRESS, DATE_TIME), but
+#: some are model-specific names with no built-in recognizer/operator
+#: (e.g. USERNAME, PASSWORD, API_KEY, GOVERNMENT_ID, PASSPORT); override the
+#: mapping if you need to align them with your own taxonomy.
 #: Exposed as a read-only mapping; copy it (``dict(GLINER2_PII_ENTITY_MAPPING)``)
 #: before mutating.
 GLINER2_PII_ENTITY_MAPPING: Mapping[str, str] = MappingProxyType(
