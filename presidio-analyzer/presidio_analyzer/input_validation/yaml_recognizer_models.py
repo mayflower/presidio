@@ -236,6 +236,10 @@ class GLiNER2RecognizerConfig(PredefinedRecognizerConfig):
     label_descriptions: Optional[Dict[str, str]] = Field(
         None, description="Optional natural-language description per model label"
     )
+    add_requested_entities: Optional[bool] = Field(
+        None,
+        description="Query ad-hoc labels for requested entities not in the mapping",
+    )
 
     @model_validator(mode="after")
     def validate_entity_mapping_and_supported_entities(self):

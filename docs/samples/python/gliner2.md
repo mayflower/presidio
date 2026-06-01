@@ -187,6 +187,78 @@ print(analyzer.analyze(text="Email john.smith@acme.com", language="en"))
     `entity_mapping` and `supported_entities` are mutually exclusive — provide at
     most one. Omit both to use the built-in 42-label PII mapping.
 
+## Recommended: hybrid with Presidio's pattern recognizers
+
+GLiNER2 is strongest on **free-form** entities — names, addresses/locations, and
+identifiers that have no fixed syntax. For **rigid-format** PII (email, IP, IBAN,
+credit card, and other checksum/regex-validated values), Presidio's built-in
+deterministic recognizers are typically far more precise, since they validate
+structure (Luhn, IBAN mod-97, well-formed IP/email) instead of inferring from
+context.
+
+The recommended setup therefore **routes each entity to the detector that is best
+at it**: keep Presidio's pattern/checksum recognizers for the rigid-format PII
+they validate, and scope `GLiNER2Recognizer` to the entities where it adds value
+(person, location, and free-form IDs Presidio has no recognizer for). Give each
+entity type a **single owner** — having two detectors emit the same type tends to
+compound false positives rather than improve results.
+
+```python
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.predefined_recognizers import GLiNER2Recognizer
+
+# AnalyzerEngine ships the regex/checksum recognizers (Email, Phone, CreditCard,
+# Ip, Iban, US_SSN, ...). They keep ownership of rigid-format PII.
+analyzer = AnalyzerEngine()
+
+# Scope GLiNER2 to free-form entities only; the deterministic recognizers own
+# email / phone / ip / iban / credit card.
+gliner2 = GLiNER2Recognizer(
+    map_location="cpu",
+    threshold=0.5,
+    # Stay strictly within entity_mapping. Without this, GLiNER2 would also try
+    # to detect the entity types the analyzer requests on behalf of the other
+    # recognizers (email/phone/ip/iban/credit card) as ad-hoc labels, polluting
+    # those high-precision results.
+    add_requested_entities=False,
+    entity_mapping={
+        # names + locations/addresses (GLiNER2 >> spaCy NER, especially streets)
+        "person": "PERSON", "full_name": "PERSON",
+        "first_name": "PERSON", "last_name": "PERSON", "middle_name": "PERSON",
+        "address": "LOCATION", "street_address": "LOCATION", "city": "LOCATION",
+        "state_or_region": "LOCATION", "postal_code": "LOCATION",
+        "country": "LOCATION",
+        # free-form PII Presidio has no built-in recognizer for
+        "username": "USERNAME", "password": "PASSWORD", "secret": "SECRET",
+        "api_key": "API_KEY", "access_token": "ACCESS_TOKEN",
+        "government_id": "GOVERNMENT_ID", "national_id_number": "NATIONAL_ID",
+        "passport_number": "PASSPORT",
+        "drivers_license_number": "DRIVER_LICENSE",
+    },
+)
+analyzer.registry.add_recognizer(gliner2)
+
+# GLiNER2 replaces spaCy as the NER source for person/location, so drop the
+# spaCy recognizer to avoid lower-quality duplicate spans.
+analyzer.registry.remove_recognizer("SpacyRecognizer")
+```
+
+!!! tip "Phone numbers: pick one owner"
+    `PhoneRecognizer` (the `phonenumbers` library) is precise but misses formats
+    it cannot parse; GLiNER2 has high recall but lower precision. **Unioning both
+    measured worse than either alone** (the false positives compound). Keep phone
+    with `PhoneRecognizer` by default; if you need the model's recall instead, add
+    `"phone_number": "PHONE_NUMBER"` to the mapping *and remove* `PhoneRecognizer`,
+    rather than running both.
+
+!!! tip "Checksum recognizers reject malformed values"
+    `CreditCardRecognizer` (Luhn), `IbanRecognizer` (mod-97), and similar
+    recognizers intentionally reject values that fail validation. This is what
+    makes them high-precision, but if your data contains non-standard or
+    masked numbers you may also want GLiNER2 to detect them (add `card_number`
+    /`payment_card` to the mapping and union the results), trading some precision
+    for recall.
+
 ## Multilingual notes
 
 - The model's labels are multilingual: the model card lists support for

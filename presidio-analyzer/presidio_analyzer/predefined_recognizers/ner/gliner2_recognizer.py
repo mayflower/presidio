@@ -120,6 +120,7 @@ class GLiNER2Recognizer(LocalRecognizer):
         threshold: float = 0.5,
         map_location: Optional[str] = None,
         label_descriptions: Optional[Dict[str, str]] = None,
+        add_requested_entities: bool = True,
         text_chunker: Optional[BaseTextChunker] = None,
         **model_kwargs,
     ):
@@ -151,6 +152,12 @@ class GLiNER2Recognizer(LocalRecognizer):
             description (and ad-hoc entities requested at ``analyze()`` time) are
             still queried as bare labels, so providing descriptions for a subset
             does not stop the other labels from being detected.
+        :param add_requested_entities: When True (default), entity types requested
+            at ``analyze()`` time that are not in ``entity_mapping`` are added to
+            the model's query as ad-hoc labels (zero-shot). Set to False to keep
+            the recognizer strictly within ``entity_mapping`` — useful in a mixed
+            registry where other recognizers (e.g. regex/checksum ones) own those
+            entity types, so GLiNER2 does not also try to detect them.
         :param text_chunker: Custom text chunking strategy. If None, uses
             CharacterBasedTextChunker with default settings (chunk_size=250,
             chunk_overlap=50)
@@ -190,6 +197,7 @@ class GLiNER2Recognizer(LocalRecognizer):
 
         self.threshold = threshold
         self.label_descriptions = label_descriptions
+        self.add_requested_entities = add_requested_entities
         self.model_kwargs = model_kwargs
 
         # Use provided chunker or default to in-house character-based chunker
@@ -358,9 +366,13 @@ class GLiNER2Recognizer(LocalRecognizer):
         Starts from the configured model labels and appends each requested
         entity that is neither a known model label nor an already-mapped
         Presidio entity value, so callers can request ad-hoc labels the model
-        was not explicitly configured for.
+        was not explicitly configured for. Disabled when
+        ``add_requested_entities`` is False (keeps the recognizer scoped to
+        ``entity_mapping``).
         """
         labels = list(self.gliner2_labels)
+        if not self.add_requested_entities:
+            return labels
         for entity in entities:
             if (
                 entity not in self.model_to_presidio_entity_mapping.values()

@@ -484,6 +484,24 @@ def test_adhoc_requested_label_is_added_to_schema(mock_gliner2):
     assert "CUSTOM_LABEL" in schema  # ad-hoc requested label was appended
 
 
+def test_add_requested_entities_false_keeps_recognizer_scoped(mock_gliner2):
+    """With add_requested_entities=False, requested entities outside the mapping
+    are not queried (so the recognizer stays scoped in a mixed registry)."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS"},
+        add_requested_entities=False,
+    )
+
+    recognizer.analyze("text", ["EMAIL_ADDRESS", "IP_ADDRESS", "CREDIT_CARD"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]
+    assert "email" in schema  # configured label still queried
+    assert "IP_ADDRESS" not in schema  # ad-hoc labels NOT appended
+    assert "CREDIT_CARD" not in schema
+
+
 def test_label_descriptions_overlay_covers_full_label_set(mock_gliner2):
     """label_descriptions for a subset must not drop the other configured labels."""
     mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
