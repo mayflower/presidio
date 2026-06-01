@@ -259,6 +259,37 @@ analyzer.registry.remove_recognizer("SpacyRecognizer")
     /`payment_card` to the mapping and union the results), trading some precision
     for recall.
 
+### GLiNER2 vs spaCy as the NER component (illustrative)
+
+The hybrid above uses GLiNER2 for the NER-style entities (person, location,
+free-form IDs). The alternative is to keep spaCy NER for those and pair it with
+the same regex/checksum recognizers. The table below compares the two hybrids on
+2,000 German examples from
+[`ai4privacy/pii-masking-200k`](https://huggingface.co/datasets/ai4privacy/pii-masking-200k),
+matched on character-overlap. Both hybrids use the **same** regex/checksum
+recognizers, so the structured types (email, phone, credit card, IBAN, IP) score
+identically — only the NER component differs:
+
+| Entity | spaCy + regex (P / R / F1) | GLiNER2 + regex (P / R / F1) |
+| --- | --- | --- |
+| PERSON | 0.60 / 0.70 / 0.65 | 0.57 / 0.90 / **0.70** |
+| LOCATION | 0.52 / 0.66 / 0.58 | 0.65 / 0.91 / **0.76** |
+| USERNAME | 0.00 / 0.00 / 0.00 | 0.45 / 0.76 / **0.56** |
+| EMAIL / PHONE / CREDIT_CARD / IBAN / IP | *identical (shared regex recognizers)* | *identical* |
+| **Micro (all 8 types)** | 0.65 / 0.68 / 0.67 | 0.66 / 0.86 / **0.74** |
+
+GLiNER2 wins the NER component — most strongly on **LOCATION** (it detects full
+street addresses, which spaCy's `LOC` misses) and on free-form types like
+**USERNAME** that spaCy has no label for, plus higher **PERSON** recall. spaCy's
+person *precision* is marginally higher, and spaCy is much lighter/faster on CPU,
+so it remains a reasonable choice when those matter more.
+
+!!! note
+    These numbers are illustrative: ai4privacy is synthetic (cleaner than real
+    text), the per-type sample is modest, and results depend on the language,
+    threshold, and entity mapping. Benchmark on your own data before relying on
+    them — see [PII detection evaluation](https://microsoft.github.io/presidio/evaluation/).
+
 ## Multilingual notes
 
 - The model's labels are multilingual: the model card lists support for
