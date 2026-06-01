@@ -40,6 +40,22 @@ from .country_specific.germany.de_social_security_recognizer import (
 from .country_specific.germany.de_tax_id_recognizer import DeTaxIdRecognizer
 from .country_specific.germany.de_tax_number_recognizer import DeTaxNumberRecognizer
 from .country_specific.germany.de_vat_id_recognizer import DeVatIdRecognizer
+from .country_specific.germany.german_address_recognizer import (
+    GermanAddressRecognizer,
+)
+from .country_specific.germany.german_credit_card_recognizer import (
+    GermanCreditCardRecognizer,
+)
+from .country_specific.germany.german_honorific_person_recognizer import (
+    GermanHonorificPersonRecognizer,
+)
+from .country_specific.germany.german_phone_recognizer import GermanPhoneRecognizer
+from .country_specific.germany.german_postal_code_recognizer import (
+    GermanPostalCodeRecognizer,
+)
+from .country_specific.germany.german_username_recognizer import (
+    GermanUsernamePatternRecognizer,
+)
 from .country_specific.india import (
     InVehicleRegistrationRecognizer,
 )
@@ -269,5 +285,11 @@ __all__ = [
     "DeLanrRecognizer",
     "DeBsnrRecognizer",
     "DeVatIdRecognizer",
+    "GermanPhoneRecognizer",
+    "GermanCreditCardRecognizer",
+    "GermanPostalCodeRecognizer",
+    "GermanAddressRecognizer",
+    "GermanUsernamePatternRecognizer",
+    "GermanHonorificPersonRecognizer",
     "DeFuehrerscheinRecognizer",
 ]
