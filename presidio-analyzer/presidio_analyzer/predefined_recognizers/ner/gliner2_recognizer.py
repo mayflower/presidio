@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Dict, List, Optional
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Optional
 
 from presidio_analyzer import (
     AnalysisExplanation,
@@ -31,57 +32,61 @@ DEFAULT_GLINER2_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 #: Used as the default when neither ``entity_mapping`` nor
 #: ``supported_entities`` is provided. Pass a custom ``entity_mapping`` to
 #: override it (e.g. to use a different model or your own entity names).
-GLINER2_PII_ENTITY_MAPPING: Dict[str, str] = {
-    # Person / names
-    "person": "PERSON",
-    "full_name": "PERSON",
-    "first_name": "PERSON",
-    "middle_name": "PERSON",
-    "last_name": "PERSON",
-    "date_of_birth": "DATE_TIME",
-    # Contact / address
-    "email": "EMAIL_ADDRESS",
-    "phone_number": "PHONE_NUMBER",
-    "address": "LOCATION",
-    "street_address": "LOCATION",
-    "city": "LOCATION",
-    "state_or_region": "LOCATION",
-    "postal_code": "LOCATION",
-    "country": "LOCATION",
-    # Government / tax IDs
-    "government_id": "GOVERNMENT_ID",
-    "national_id_number": "NATIONAL_ID",
-    "passport_number": "PASSPORT",
-    "drivers_license_number": "DRIVER_LICENSE",
-    "license_number": "LICENSE_NUMBER",
-    "tax_id": "TAX_ID",
-    "tax_number": "TAX_ID",
-    # Banking / payment
-    "bank_account": "BANK_ACCOUNT",
-    "account_number": "BANK_ACCOUNT",
-    "routing_number": "BANK_ROUTING_NUMBER",
-    "iban": "IBAN_CODE",
-    "payment_card": "CREDIT_CARD",
-    "card_number": "CREDIT_CARD",
-    "card_expiry": "CREDIT_CARD_EXPIRATION",
-    "card_cvv": "CREDIT_CARD_CVV",
-    # Digital identity
-    "username": "USERNAME",
-    "ip_address": "IP_ADDRESS",
-    "account_id": "ACCOUNT_ID",
-    "sensitive_account_id": "ACCOUNT_ID",
-    # Secrets / credentials
-    "password": "PASSWORD",
-    "secret": "SECRET",
-    "api_key": "API_KEY",
-    "access_token": "ACCESS_TOKEN",
-    "recovery_code": "RECOVERY_CODE",
-    # Sensitive dates
-    "sensitive_date": "DATE_TIME",
-    "document_date": "DATE_TIME",
-    "expiration_date": "DATE_TIME",
-    "transaction_date": "DATE_TIME",
-}
+#: Exposed as a read-only mapping; copy it (``dict(GLINER2_PII_ENTITY_MAPPING)``)
+#: before mutating.
+GLINER2_PII_ENTITY_MAPPING: Mapping[str, str] = MappingProxyType(
+    {
+        # Person / names
+        "person": "PERSON",
+        "full_name": "PERSON",
+        "first_name": "PERSON",
+        "middle_name": "PERSON",
+        "last_name": "PERSON",
+        "date_of_birth": "DATE_TIME",
+        # Contact / address
+        "email": "EMAIL_ADDRESS",
+        "phone_number": "PHONE_NUMBER",
+        "address": "LOCATION",
+        "street_address": "LOCATION",
+        "city": "LOCATION",
+        "state_or_region": "LOCATION",
+        "postal_code": "LOCATION",
+        "country": "LOCATION",
+        # Government / tax IDs
+        "government_id": "GOVERNMENT_ID",
+        "national_id_number": "NATIONAL_ID",
+        "passport_number": "PASSPORT",
+        "drivers_license_number": "DRIVER_LICENSE",
+        "license_number": "LICENSE_NUMBER",
+        "tax_id": "TAX_ID",
+        "tax_number": "TAX_ID",
+        # Banking / payment
+        "bank_account": "BANK_ACCOUNT",
+        "account_number": "BANK_ACCOUNT",
+        "routing_number": "BANK_ROUTING_NUMBER",
+        "iban": "IBAN_CODE",
+        "payment_card": "CREDIT_CARD",
+        "card_number": "CREDIT_CARD",
+        "card_expiry": "CREDIT_CARD_EXPIRATION",
+        "card_cvv": "CREDIT_CARD_CVV",
+        # Digital identity
+        "username": "USERNAME",
+        "ip_address": "IP_ADDRESS",
+        "account_id": "ACCOUNT_ID",
+        "sensitive_account_id": "ACCOUNT_ID",
+        # Secrets / credentials
+        "password": "PASSWORD",
+        "secret": "SECRET",
+        "api_key": "API_KEY",
+        "access_token": "ACCESS_TOKEN",
+        "recovery_code": "RECOVERY_CODE",
+        # Sensitive dates
+        "sensitive_date": "DATE_TIME",
+        "document_date": "DATE_TIME",
+        "expiration_date": "DATE_TIME",
+        "transaction_date": "DATE_TIME",
+    }
+)
 
 
 class GLiNER2Recognizer(LocalRecognizer):
@@ -139,22 +144,27 @@ class GLiNER2Recognizer(LocalRecognizer):
             (e.g. ``"cpu"`` or ``"cuda"``). If None, will auto-detect GPU or use
             CPU.
         :param label_descriptions: Optional mapping from model label to a natural
-            language description (e.g. ``{"email": "an email address"}``). When
-            provided, the descriptions are passed to GLiNER2's schema instead of
-            bare labels, which can improve recall/precision for ambiguous labels.
-            The keys should match the model labels (the keys of ``entity_mapping``).
+            language description (e.g. ``{"email": "an email address"}``), which
+            can improve recall/precision for ambiguous labels. Keys should match
+            the model labels (the keys of ``entity_mapping``). Descriptions are
+            overlaid onto the full label set at analysis time: labels without a
+            description (and ad-hoc entities requested at ``analyze()`` time) are
+            still queried as bare labels, so providing descriptions for a subset
+            does not stop the other labels from being detected.
         :param text_chunker: Custom text chunking strategy. If None, uses
             CharacterBasedTextChunker with default settings (chunk_size=250,
             chunk_overlap=50)
         :param model_kwargs: Additional keyword arguments to pass to
             ``GLiNER2.from_pretrained`` (e.g. ``quantize`` or ``compile``).
         """
-        if entity_mapping:
-            if supported_entities:
-                raise ValueError(
-                    "entity_mapping and supported_entities cannot be used together"
-                )
+        if entity_mapping is not None and supported_entities is not None:
+            # Identity-based check, matching GLiNER2RecognizerConfig's validator,
+            # so the constraint behaves the same whether built directly or via YAML.
+            raise ValueError(
+                "entity_mapping and supported_entities cannot be used together"
+            )
 
+        if entity_mapping:
             self.model_to_presidio_entity_mapping = entity_mapping
         elif supported_entities:
             self.model_to_presidio_entity_mapping = {
@@ -233,27 +243,45 @@ class GLiNER2Recognizer(LocalRecognizer):
         """
 
         # Combine the input labels as this model allows for ad-hoc labels.
-        # When label descriptions are supplied, pass them through to GLiNER2's
-        # schema instead of bare labels (the model accepts a {label: description}
-        # mapping as its entity schema).
         labels = self.__create_input_labels(entities)
-        labels_or_label_descriptions = self.label_descriptions or labels
+
+        # When label descriptions are supplied, build the GLiNER2 schema by
+        # overlaying the descriptions onto the *full* label set (the model
+        # accepts a {label: description} mapping). Labels without a description
+        # fall back to the bare label, so configured and ad-hoc labels are still
+        # queried instead of being dropped.
+        if self.label_descriptions:
+            schema = {
+                label: self.label_descriptions.get(label, label) for label in labels
+            }
+        else:
+            schema = labels
 
         # Process text with automatic chunking
         def predict_func(text: str) -> List[RecognizerResult]:
-            # GLiNER2 returns {"entities": {label: [{text, confidence, start, end}]}}
+            # GLiNER2 returns {"entities": {label: [{text, confidence, start, end}]}};
+            # only start/end/confidence are consumed below.
             raw_predictions = self.gliner2.extract_entities(
                 text,
-                labels_or_label_descriptions,
+                schema,
                 threshold=self.threshold,
                 include_confidence=True,
                 include_spans=True,
             )
-            entities_by_label = (
-                raw_predictions.get("entities", raw_predictions)
-                if isinstance(raw_predictions, dict)
-                else {}
-            )
+            if isinstance(raw_predictions, dict):
+                # Accept both the wrapped ({"entities": {...}}) and the
+                # already-unwrapped ({label: [...]}) shapes.
+                entities_by_label = raw_predictions.get("entities", raw_predictions)
+            else:
+                # An unexpected output shape would otherwise be silently treated
+                # as "no PII found"; surface it instead.
+                logger.warning(
+                    "GLiNER2 returned unexpected output of type %s (expected dict); "
+                    "treating as no detections. model=%s",
+                    type(raw_predictions).__name__,
+                    self.model_name,
+                )
+                entities_by_label = {}
 
             results = []
             for label, matches in entities_by_label.items():
@@ -269,18 +297,32 @@ class GLiNER2Recognizer(LocalRecognizer):
                     start = match.get("start")
                     end = match.get("end")
                     if start is None or end is None:
-                        # Without spans we cannot place the entity in the text.
-                        # Skip rather than guessing with a naive text.find().
-                        logger.debug(
-                            "Skipping GLiNER2 entity without start/end span: %s",
+                        # We request include_spans=True, so a missing span means
+                        # the model dropped a real detection's offsets. We cannot
+                        # place it in the text (guessing with text.find() would
+                        # misplace redactions), so skip it -- but at warning level,
+                        # because a detected PII entity is being discarded.
+                        logger.warning(
+                            "GLiNER2 returned entity for label '%s' without a "
+                            "start/end span despite include_spans=True; dropping "
+                            "this detection: %s",
+                            label,
                             match,
                         )
                         continue
 
                     # Fall back to the recognizer threshold when the model does
-                    # not return a confidence for this entity.
+                    # not return a confidence for this entity. Every returned
+                    # match already passed the model's threshold filter, so the
+                    # threshold is the correct conservative lower-bound score.
                     score = match.get("confidence")
                     if score is None:
+                        logger.debug(
+                            "GLiNER2 match for label '%s' missing confidence; "
+                            "defaulting score to threshold %s",
+                            label,
+                            self.threshold,
+                        )
                         score = self.threshold
                     score = float(score)
 
@@ -311,7 +353,13 @@ class GLiNER2Recognizer(LocalRecognizer):
         return predictions
 
     def __create_input_labels(self, entities):
-        """Append the entities requested by the user to the list of labels if it's not there."""  # noqa: E501
+        """Build the model label list, including ad-hoc requested entities.
+
+        Starts from the configured model labels and appends each requested
+        entity that is neither a known model label nor an already-mapped
+        Presidio entity value, so callers can request ad-hoc labels the model
+        was not explicitly configured for.
+        """
         labels = list(self.gliner2_labels)
         for entity in entities:
             if (

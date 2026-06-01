@@ -825,6 +825,43 @@ def test_gliner2_recognizer_config_entity_mapping_and_supported_entities_mutuall
         )
 
 
+def test_gliner2_fields_survive_registry_config_model_dump():
+    """Guard the union ordering: the registry-level model_dump (used by
+    ConfigurationValidator) must not drop GLiNER2 extra fields.
+
+    If GLiNER2RecognizerConfig were placed after PredefinedRecognizerConfig in
+    the RecognizerRegistryConfig.recognizers union, Pydantic would serialize it
+    via the base schema and silently drop model_name/entity_mapping/threshold/
+    label_descriptions -- the exact bug the union ordering fixes.
+    """
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        RecognizerRegistryConfig,
+    )
+
+    registry = RecognizerRegistryConfig(
+        supported_languages=["en"],
+        recognizers=[
+            {
+                "name": "GLiNER2Recognizer",
+                "type": "predefined",
+                "supported_language": "en",
+                "model_name": "fastino/gliner2-privacy-filter-PII-multi",
+                "threshold": 0.4,
+                "map_location": "cpu",
+                "entity_mapping": {"email": "EMAIL_ADDRESS"},
+                "label_descriptions": {"email": "an email address"},
+            }
+        ],
+    )
+
+    dumped = registry.model_dump()["recognizers"][0]
+    assert dumped["model_name"] == "fastino/gliner2-privacy-filter-PII-multi"
+    assert dumped["threshold"] == 0.4
+    assert dumped["map_location"] == "cpu"
+    assert dumped["entity_mapping"] == {"email": "EMAIL_ADDRESS"}
+    assert dumped["label_descriptions"] == {"email": "an email address"}
+
+
 def test_huggingface_recognizer_config_model_dump_excludes_none():
     """Test that HuggingFaceRecognizerConfig.model_dump excludes None fields by default."""
     from presidio_analyzer.input_validation.yaml_recognizer_models import (

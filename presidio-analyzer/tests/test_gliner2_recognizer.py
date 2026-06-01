@@ -467,6 +467,142 @@ def test_docs_python_blocks_are_syntactically_valid():
 
 
 # ---------------------------------------------------------------------------
+# Regression tests for review findings
+# ---------------------------------------------------------------------------
+
+
+def test_adhoc_requested_label_is_added_to_schema(mock_gliner2):
+    """__create_input_labels: a requested entity absent from the mapping is queried."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(entity_mapping={"email": "EMAIL_ADDRESS"})
+
+    recognizer.analyze("text", ["CUSTOM_LABEL"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]  # list of labels (no descriptions configured)
+    assert "email" in schema  # configured label
+    assert "CUSTOM_LABEL" in schema  # ad-hoc requested label was appended
+
+
+def test_label_descriptions_overlay_covers_full_label_set(mock_gliner2):
+    """label_descriptions for a subset must not drop the other configured labels."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS", "phone_number": "PHONE_NUMBER"},
+        label_descriptions={"email": "an email address"},  # description for email only
+    )
+
+    recognizer.analyze("text", ["EMAIL_ADDRESS", "PHONE_NUMBER"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]
+    assert isinstance(schema, dict)
+    # email keeps its description; phone_number is still queried as a bare label
+    assert schema["email"] == "an email address"
+    assert schema["phone_number"] == "phone_number"
+
+
+def test_label_descriptions_overlay_keeps_adhoc_labels(mock_gliner2):
+    """Ad-hoc requested labels survive even when label_descriptions is set."""
+    mock_gliner2.extract_entities.return_value = _entities_payload({"email": []})
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"email": "EMAIL_ADDRESS"},
+        label_descriptions={"email": "an email address"},
+    )
+
+    recognizer.analyze("text", ["CUSTOM_LABEL"])
+
+    args, _ = mock_gliner2.extract_entities.call_args
+    schema = args[1]
+    assert isinstance(schema, dict)
+    assert schema["email"] == "an email address"
+    assert schema["CUSTOM_LABEL"] == "CUSTOM_LABEL"  # ad-hoc label, no description
+
+
+def test_non_dict_model_output_warns_and_returns_empty(mock_gliner2, caplog):
+    """A non-dict extract_entities result is surfaced via a warning, not silenced."""
+    import logging
+
+    mock_gliner2.extract_entities.return_value = ["unexpected", "list", "output"]
+    recognizer = GLiNER2Recognizer(entity_mapping={"email": "EMAIL_ADDRESS"})
+
+    with caplog.at_level(logging.WARNING, logger="presidio-analyzer"):
+        results = recognizer.analyze("text", ["EMAIL_ADDRESS"])
+
+    assert results == []
+    assert any(
+        "unexpected output" in r.getMessage() and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_entity_without_span_logs_warning(mock_gliner2, caplog):
+    """Dropping a detected entity with no span is logged at WARNING (not debug)."""
+    import logging
+
+    mock_gliner2.extract_entities.return_value = _entities_payload(
+        {"email": [{"text": "a@b.com", "confidence": 0.9}]}  # missing start/end
+    )
+    recognizer = GLiNER2Recognizer(entity_mapping={"email": "EMAIL_ADDRESS"})
+
+    with caplog.at_level(logging.WARNING, logger="presidio-analyzer"):
+        results = recognizer.analyze("a@b.com", ["EMAIL_ADDRESS"])
+
+    assert results == []
+    assert any(
+        "without a start/end span" in r.getMessage() and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_empty_entity_mapping_with_supported_entities_raises(mock_gliner2):
+    """Mutual-exclusion is identity-based: empty mapping + entities still conflicts."""
+    with pytest.raises(ValueError):
+        GLiNER2Recognizer(entity_mapping={}, supported_entities=["EMAIL_ADDRESS"])
+
+
+def test_gliner2_pii_entity_mapping_is_read_only():
+    """The exported default mapping is immutable (must be copied before mutation)."""
+    with pytest.raises(TypeError):
+        GLINER2_PII_ENTITY_MAPPING["email"] = "SOMETHING_ELSE"  # type: ignore[index]
+
+
+def test_chunk_overlap_entity_is_deduplicated(mock_gliner2):
+    """An entity in the overlap region of two chunks is emitted once, not twice."""
+    # "Dr. Smith" sits in the 50-char overlap so both chunks report it.
+    text = ("x " * 95) + "Dr. Smith" + (" x" * 100)
+
+    call_count = 0
+
+    def fake_extract(chunk, entity_types, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        people = []
+        if "Dr. Smith" in chunk:
+            start = chunk.find("Dr. Smith")
+            score = 0.95 if call_count == 1 else 0.90
+            people.append(
+                {"text": "Dr. Smith", "confidence": score,
+                 "start": start, "end": start + 9}
+            )
+        return _entities_payload({"person": people})
+
+    mock_gliner2.extract_entities.side_effect = fake_extract
+
+    recognizer = GLiNER2Recognizer(
+        entity_mapping={"person": "PERSON"},
+        text_chunker=CharacterBasedTextChunker(chunk_size=250, chunk_overlap=50),
+    )
+
+    results = recognizer.analyze(text, ["PERSON"])
+
+    assert mock_gliner2.extract_entities.call_count >= 2  # multiple chunks processed
+    assert len(results) == 1  # deduplicated to a single result
+    assert text[results[0].start:results[0].end] == "Dr. Smith"
+    assert results[0].score == 0.95  # highest-scoring duplicate kept
+
+
+# ---------------------------------------------------------------------------
 # Optional integration test against the real model (downloads weights).
 # Opt-in only: PRESIDIO_RUN_FASTINO_GLINER2_INTEGRATION=1
 # ---------------------------------------------------------------------------

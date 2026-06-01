@@ -109,7 +109,8 @@ from presidio_anonymizer import AnonymizerEngine
 # 1. Build the analyzer (default spaCy NLP engine for tokenization)
 analyzer = AnalyzerEngine()
 
-# 2. Register GLiNER2 (omit entity_mapping to use the built-in PII mapping)
+# 2. Register GLiNER2 with a custom entity_mapping
+#    (omit entity_mapping entirely to use the built-in 42-label PII mapping)
 analyzer.registry.add_recognizer(
     GLiNER2Recognizer(
         model_name="fastino/gliner2-privacy-filter-PII-multi",
@@ -210,11 +211,11 @@ print(analyzer.analyze(text="Email john.smith@acme.com", language="en"))
 - **No default enablement.** `GLiNER2Recognizer` is added to the registry only
   when you do so explicitly (in code or via registry YAML). It is never loaded
   by `load_predefined_recognizers()`.
-- **Pin the model revision for reproducibility.** `GLiNER2.from_pretrained`
-  always resolves the latest revision on the Hugging Face Hub and does not accept
-  a `revision` argument. To pin an exact revision, pre-download it and point
-  `model_name` at the local directory (`from_pretrained` loads local paths
-  directly):
+- **Pin the model revision for reproducibility.** As of `gliner2` 1.x,
+  `GLiNER2.from_pretrained` resolves the latest revision on the Hugging Face Hub
+  and does not expose a `revision` argument. To pin an exact revision,
+  pre-download it and point `model_name` at the local directory
+  (`from_pretrained` loads local paths directly):
 
   ```python
   from huggingface_hub import snapshot_download

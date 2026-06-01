@@ -233,6 +233,9 @@ class GLiNER2RecognizerConfig(PredefinedRecognizerConfig):
     threshold: Optional[float] = Field(None, description="Confidence threshold")
     map_location: Optional[str] = Field(None, description="Device (cpu/gpu/etc.)")
     entity_mapping: Optional[Dict[str, str]] = Field(None, description="Entity mapping")
+    label_descriptions: Optional[Dict[str, str]] = Field(
+        None, description="Optional natural-language description per model label"
+    )
 
     @model_validator(mode="after")
     def validate_entity_mapping_and_supported_entities(self):
@@ -265,9 +268,7 @@ class CustomRecognizerConfig(BaseRecognizerConfig):
     )
     country_code: Optional[str] = Field(
         default=None,
-        description=(
-            "Optional ISO 3166-1 alpha-2 country tag for country filtering"
-        ),
+        description=("Optional ISO 3166-1 alpha-2 country tag for country filtering"),
     )
     patterns: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="List of patterns"
