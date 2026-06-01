@@ -9,7 +9,8 @@ separate library (`gliner2`) with a different inference API
 
 This page describes how to use the multilingual PII model
 [`fastino/gliner2-privacy-filter-PII-multi`](https://huggingface.co/fastino/gliner2-privacy-filter-PII-multi)
-with Presidio in production.
+*(Apache 2.0)* with Presidio in production. The `gliner2` library is also
+Apache 2.0.
 
 ## Two usage modes
 
