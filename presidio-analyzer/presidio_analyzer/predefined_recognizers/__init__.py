@@ -147,6 +147,7 @@ from .generic.phone_recognizer import PhoneRecognizer
 from .generic.url_recognizer import UrlRecognizer
 
 # NER recognizers
+from .ner.gliner2_recognizer import GLiNER2Recognizer
 from .ner.gliner_recognizer import GLiNERRecognizer
 from .ner.huggingface_ner_recognizer import HuggingFaceNerRecognizer
 from .ner.medical_ner_recognizer import MedicalNERRecognizer
@@ -220,6 +221,7 @@ __all__ = [
     "ItPassportRecognizer",
     "InPanRecognizer",
     "GLiNERRecognizer",
+    "GLiNER2Recognizer",
     "HuggingFaceNerRecognizer",
     "PhTinRecognizer",
     "PlPeselRecognizer",

@@ -224,6 +224,38 @@ class GLiNERRecognizerConfig(PredefinedRecognizerConfig):
         return super().model_dump(*args, **kwargs)
 
 
+class GLiNER2RecognizerConfig(PredefinedRecognizerConfig):
+    """Configuration specifically for GLiNER2 models."""
+
+    model_config = ConfigDict(extra="allow")
+
+    model_name: Optional[str] = Field(None, description="GLiNER2 model name")
+    threshold: Optional[float] = Field(None, description="Confidence threshold")
+    map_location: Optional[str] = Field(None, description="Device (cpu/gpu/etc.)")
+    entity_mapping: Optional[Dict[str, str]] = Field(None, description="Entity mapping")
+
+    @model_validator(mode="after")
+    def validate_entity_mapping_and_supported_entities(self):
+        """Validate that entity_mapping and supported_entities are not both set."""
+        if self.entity_mapping is not None and self.supported_entities is not None:
+            raise ValueError(
+                "GLiNER2 recognizer configuration cannot define both "
+                "'entity_mapping' and 'supported_entities'; these fields are "
+                "mutually exclusive."
+            )
+        return self
+
+    def model_dump(self, *args, **kwargs) -> Dict[str, Any]:
+        """Serialize the config without None values by default.
+
+        GLiNER2 recognizer kwargs are passed directly to the recognizer constructor.
+        Excluding None values preserves constructor defaults for omitted YAML fields
+        instead of overriding them with explicit None.
+        """
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(*args, **kwargs)
+
+
 class CustomRecognizerConfig(BaseRecognizerConfig):
     """Configuration for custom pattern-based recognizers."""
 
@@ -347,9 +379,17 @@ class RecognizerRegistryConfig(BaseModel):
         default=None, description="List of supported languages"
     )
     global_regex_flags: int = Field(default=26, description="Global regex flags")
+    # Concrete predefined-recognizer config subclasses must be listed before
+    # their ``PredefinedRecognizerConfig`` base. Pydantic serializes a union
+    # member using the schema of the type it matches, so a subclass that is not
+    # in the union is dumped via the base schema, silently dropping its extra
+    # fields (model_name, entity_mapping, threshold, ...) when the registry
+    # configuration is re-serialized in ``ConfigurationValidator``.
     recognizers: List[
         Union[
             HuggingFaceRecognizerConfig,
+            GLiNERRecognizerConfig,
+            GLiNER2RecognizerConfig,
             PredefinedRecognizerConfig,
             CustomRecognizerConfig,
             str,
@@ -534,4 +574,5 @@ class RecognizerRegistryConfig(BaseModel):
 CONFIG_MODEL_MAP: Dict[str, Type[BaseModel]] = {
     "HuggingFaceNerRecognizer": HuggingFaceRecognizerConfig,
     "GLiNERRecognizer": GLiNERRecognizerConfig,
+    "GLiNER2Recognizer": GLiNER2RecognizerConfig,
 }

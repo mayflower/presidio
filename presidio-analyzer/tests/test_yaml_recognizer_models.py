@@ -757,6 +757,74 @@ def test_gliner_recognizer_config_entity_mapping_and_supported_entities_mutually
         )
 
 
+def test_gliner2_recognizer_config_model_name():
+    """Test that GLiNER2Recognizer config fields survive validation."""
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+        RecognizerRegistryConfig,
+    )
+
+    registry_config = {
+        "recognizers": [
+            {
+                "name": "GLiNER2Recognizer",
+                "type": "predefined",
+                "supported_language": "en",
+                "model_name": "fastino/gliner2-privacy-filter-PII-multi",
+                "threshold": 0.5,
+                "map_location": "cpu",
+                "entity_mapping": {"email": "EMAIL_ADDRESS"},
+            }
+        ]
+    }
+
+    config = RecognizerRegistryConfig(**registry_config)
+    recognizer = config.recognizers[0]
+
+    assert isinstance(recognizer, GLiNER2RecognizerConfig)
+    assert recognizer.model_name == "fastino/gliner2-privacy-filter-PII-multi"
+    assert recognizer.threshold == 0.5
+    assert recognizer.map_location == "cpu"
+    assert recognizer.entity_mapping == {"email": "EMAIL_ADDRESS"}
+
+
+def test_gliner2_recognizer_config_model_dump_excludes_none():
+    """Test that GLiNER2RecognizerConfig.model_dump excludes None fields by default."""
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+    )
+
+    config = GLiNER2RecognizerConfig(
+        name="GLiNER2Recognizer",
+        supported_language="en",
+        model_name="fastino/gliner2-privacy-filter-PII-multi",
+    )
+    dumped = config.model_dump()
+    assert dumped["model_name"] == "fastino/gliner2-privacy-filter-PII-multi"
+    # Fields not provided should be excluded, not set to None
+    assert "threshold" not in dumped
+    assert "map_location" not in dumped
+    assert "entity_mapping" not in dumped
+
+
+def test_gliner2_recognizer_config_entity_mapping_and_supported_entities_mutually_exclusive():
+    """Test that entity_mapping and supported_entities cannot both be set."""
+    import pytest
+    from pydantic import ValidationError
+
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+    )
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        GLiNER2RecognizerConfig(
+            name="GLiNER2Recognizer",
+            supported_language="en",
+            entity_mapping={"email": "EMAIL_ADDRESS"},
+            supported_entities=["EMAIL_ADDRESS"],
+        )
+
+
 def test_huggingface_recognizer_config_model_dump_excludes_none():
     """Test that HuggingFaceRecognizerConfig.model_dump excludes None fields by default."""
     from presidio_analyzer.input_validation.yaml_recognizer_models import (

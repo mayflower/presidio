@@ -8,6 +8,8 @@ Paper: [GLiNER: Generalist Model for Named Entity Recognition using Bidirectiona
 
 Since GLiNER takes as input both the sentence/text and entity types, it can be used for zero-shot named entity recognition. This means that it can recognize entities that were not seen during training.
 
+> **Looking for GLiNER2?** Models built on the second-generation GLiNER2 architecture (e.g. `fastino/gliner2-privacy-filter-PII-multi`) use the `gliner2` library and are not loadable by `GLiNERRecognizer`. See [Using GLiNER2 within Presidio](gliner2.md).
+
 ## PII Detection with GLiNER
 
 GLiNER has a trained PII detection model: 🔍 [`urchade/gliner_multi_pii-v1`](https://huggingface.co/urchade/gliner_multi_pii-v1) *(Apache 2.0)*
