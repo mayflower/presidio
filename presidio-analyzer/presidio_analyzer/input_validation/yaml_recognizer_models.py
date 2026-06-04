@@ -237,6 +237,45 @@ class HuggingFaceRecognizerConfig(PredefinedRecognizerConfig):
         None, description="Text chunker configuration"
     )
 
+    labels_to_ignore: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Model labels to drop before entity mapping (used by "
+            "BardsEuPiiRecognizer for hybrid setups; ignored by recognizers "
+            "whose constructor does not accept it)"
+        ),
+    )
+    thresholds_by_entity: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-Presidio-entity confidence thresholds, keyed by mapped entity "
+            "name (used by BardsEuPiiRecognizer)"
+        ),
+    )
+    thresholds_by_language: Optional[Dict[str, Dict[str, float]]] = Field(
+        default=None,
+        description=(
+            "Per-language, per-entity confidence thresholds, keyed by language "
+            "code then mapped entity name (used by BardsEuPiiRecognizer)"
+        ),
+    )
+    mapping_profile: Optional[str] = Field(
+        default=None,
+        description=(
+            "Named label-mapping profile (used by BardsEuPiiRecognizer): "
+            "presidio_standard | gdpr_sensitive | preserve_model_labels | "
+            "high_recall"
+        ),
+    )
+    validate_mapping: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Check the mapping's keys against the pinned expected model label "
+            "set (used by BardsEuPiiRecognizer). None validates only built-in "
+            "mappings/profiles; True/False forces it on/off"
+        ),
+    )
+
     @field_validator("text_chunker", mode="before")
     @classmethod
     def validate_text_chunker(cls, v):
