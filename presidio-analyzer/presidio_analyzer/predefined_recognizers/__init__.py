@@ -186,6 +186,7 @@ from .generic.url_recognizer import UrlRecognizer
 from .generic.uuid_recognizer import UuidRecognizer
 
 # NER recognizers
+from .ner.bards_eu_pii_recognizer import BardsEuPiiRecognizer
 from .ner.gliner_recognizer import GLiNERRecognizer
 from .ner.huggingface_ner_recognizer import HuggingFaceNerRecognizer
 from .ner.medical_ner_recognizer import MedicalNERRecognizer
@@ -266,6 +267,7 @@ __all__ = [
     "ItIdentityCardRecognizer",
     "ItPassportRecognizer",
     "InPanRecognizer",
+    "BardsEuPiiRecognizer",
     "GLiNERRecognizer",
     "HuggingFaceNerRecognizer",
     "PhTinRecognizer",
