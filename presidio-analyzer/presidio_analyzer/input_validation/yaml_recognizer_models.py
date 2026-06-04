@@ -533,5 +533,9 @@ class RecognizerRegistryConfig(BaseModel):
 # This allows for modular expansion without polluting the base config
 CONFIG_MODEL_MAP: Dict[str, Type[BaseModel]] = {
     "HuggingFaceNerRecognizer": HuggingFaceRecognizerConfig,
+    # BardsEuPiiRecognizer subclasses HuggingFaceNerRecognizer and shares its
+    # constructor, so it reuses HuggingFaceRecognizerConfig (already present in
+    # the RecognizerRegistryConfig.recognizers Union, so no field-drop on dump).
+    "BardsEuPiiRecognizer": HuggingFaceRecognizerConfig,
     "GLiNERRecognizer": GLiNERRecognizerConfig,
 }
