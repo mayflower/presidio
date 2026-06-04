@@ -122,6 +122,73 @@ for lang in ("en", "de", "fr"):
 
 Make sure your `AnalyzerEngine` / NLP engine is configured for those languages.
 
+## Hybrid setup (recommended)
+
+The model is strong on free-form, contextual PII (names, locations, roles, the
+GDPR special categories) but, like any NER model, it is noisier on rigid-format
+identifiers than a dedicated validator. Presidio already ships precise
+regex/checksum recognizers for those (`EmailRecognizer`, `PhoneRecognizer`,
+`CreditCardRecognizer` with a Luhn check, `IbanRecognizer`, `IpRecognizer`,
+`UrlRecognizer`). The best results come from a **hybrid**: let the deterministic
+recognizers own the structured entities and scope the model to what it does best.
+
+Scope the model by mapping the labels that overlap a deterministic recognizer to
+a sentinel you never request — those entities then come only from the precise
+recognizers:
+
+```python
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_analyzer.predefined_recognizers import BardsEuPiiRecognizer
+from presidio_analyzer.predefined_recognizers.ner.bards_eu_pii_recognizer import (
+    EU_PII_ENTITY_MAPPING,
+)
+
+# Labels Presidio's deterministic recognizers already cover precisely.
+DETERMINISTIC = {
+    "EMAIL_ADDRESS", "IP_ADDRESS", "PAYMENT_CARD", "PHONE_NUMBER",
+    "IDENTIFYING_LINK",
+}
+hybrid_mapping = {
+    label: ("_MODEL_IGNORE_" if label in DETERMINISTIC else entity)
+    for label, entity in EU_PII_ENTITY_MAPPING.items()
+}
+
+nlp_engine = NlpEngineProvider(nlp_configuration={
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+}).create_engine()
+
+# A default AnalyzerEngine already registers the deterministic recognizers.
+analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+analyzer.registry.add_recognizer(BardsEuPiiRecognizer(label_mapping=hybrid_mapping))
+# Let names/locations come from the model rather than spaCy's weaker NER.
+analyzer.registry.remove_recognizer("SpacyRecognizer")
+
+text = "Contact John Smith at john.smith@example.com or +49 30 12345678."
+# `_MODEL_IGNORE_` is in the model's supported entities but never requested, so
+# the model's email/phone/ip predictions are dropped — those come from regex.
+results = analyzer.analyze(text=text, language="en")
+```
+
+### How the hybrid compares
+
+On a German benchmark (ai4privacy `pii-masking-200k`, 2,000 examples), keeping the
+**same regex/checksum layer** and swapping only the NER backend (span-overlap F1;
+the structured buckets are identical by construction and omitted):
+
+| NER bucket | spaCy `de_core_news_lg` | GLiNER2 | Bards EU-PII |
+|---|---|---|---|
+| PERSON   | 0.645 | 0.663 | **0.861** |
+| LOCATION | 0.580 | 0.703 | **0.799** |
+| USERNAME | 0.000 | 0.483 | **0.585** |
+| **micro (NER)** | 0.590 | 0.661 | **0.815** |
+| **micro (all 8 buckets)** | 0.665 | 0.705 | **0.820** |
+
+Bards wins every NER bucket, and—unlike GLiNER2, which is recall-heavy but
+imprecise—it does so with high precision (PERSON P=0.80, LOCATION P=0.85 vs
+GLiNER2's 0.51 / 0.57), which matters when you anonymize by redaction.
+
 ## No-code (YAML) configuration
 
 You can enable the recognizer from a registry configuration without writing
@@ -173,3 +240,9 @@ registry = RecognizerRegistryProvider(
   OCR noise, code-switching and unusual formatting; combine it with Presidio's
   deterministic recognizers (regex/checksum for email, IBAN, credit card, IP…)
   for the structured entity types they cover precisely.
+- **No dedicated "username" label.** Bare login-usernames are detected, but the
+  model files them under `ACCOUNT_IDENTIFIER` (and name-shaped handles under
+  `PERSON_NAME`); it never emits `CONTACT_HANDLE` for them (that label is for
+  social `@handles`). If you want them in a `USERNAME` entity, add
+  `ACCOUNT_IDENTIFIER → USERNAME` to your `label_mapping` — though name-shaped
+  handles will still surface as `PERSON`, which the model cannot disambiguate.
