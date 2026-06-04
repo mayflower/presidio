@@ -1,0 +1,11 @@
+{"id": "ocr-name-1", "language": "en", "text": "Please call J0hn Sm1th tomorrow.", "spans": [{"start": 12, "end": 22, "entity_type": "PERSON"}]}
+{"id": "spaced-email-1", "language": "en", "text": "Email john . smith @ example . com for the details.", "spans": [{"start": 6, "end": 34, "entity_type": "EMAIL_ADDRESS"}]}
+{"id": "phone-spacing-1", "language": "de", "text": "Rufen Sie +49 30 1234 5678 an.", "spans": [{"start": 10, "end": 26, "entity_type": "PHONE_NUMBER"}]}
+{"id": "phone-spacing-2", "language": "de", "text": "Meine Nummer ist 0049-30-12345678 heute.", "spans": [{"start": 17, "end": 33, "entity_type": "PHONE_NUMBER"}]}
+{"id": "strasse-1", "language": "de", "text": "Sie wohnt in der Hauptstraße 12.", "spans": [{"start": 17, "end": 31, "entity_type": "LOCATION"}]}
+{"id": "strasse-2", "language": "de", "text": "Das Büro ist in der Bahnhofstrasse 3.", "spans": [{"start": 20, "end": 36, "entity_type": "LOCATION"}]}
+{"id": "mixed-lang-1", "language": "en", "text": "Hallo, my name is Pierre Dubois und ich wohne in Paris.", "spans": [{"start": 18, "end": 31, "entity_type": "PERSON"}, {"start": 49, "end": 54, "entity_type": "LOCATION"}]}
+{"id": "mixed-lang-2", "language": "fr", "text": "Bonjour, ich heiße Anna Schmidt and I work in München.", "spans": [{"start": 19, "end": 31, "entity_type": "PERSON"}, {"start": 46, "end": 53, "entity_type": "LOCATION"}]}
+{"id": "username-1", "language": "en", "text": "Login with username jsmith_88 please.", "spans": [{"start": 20, "end": 29, "entity_type": "USERNAME"}]}
+{"id": "account-1", "language": "en", "text": "Account reference ACC-100245 was flagged.", "spans": [{"start": 18, "end": 28, "entity_type": "USERNAME"}]}
+{"id": "handle-1", "language": "en", "text": "Reach me at @maria_b on the portal.", "spans": [{"start": 12, "end": 20, "entity_type": "USERNAME"}]}
