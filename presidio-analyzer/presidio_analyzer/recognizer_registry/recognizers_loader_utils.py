@@ -291,6 +291,15 @@ class RecognizerListLoader:
         """
         kwargs = {**recognizer_conf, **language_conf}
 
+        # Drop keys whose value is None. A None here means the field was absent
+        # from the YAML/dict config and only appears because the registry
+        # configuration is serialized with the parent model's ``model_dump``,
+        # which does not honor a child config's ``exclude_none`` and so fills
+        # every unset field with None. Passing those None values to the
+        # constructor would override the recognizer's own defaults (e.g. a NER
+        # recognizer's default ``model_name`` / ``threshold`` / ``chunk_size``).
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
+
         # Cleanup: Remove provided entity arguments if they are explicitly None
         if (
             RecognizerListLoader.SUPPORTED_ENTITY in kwargs
