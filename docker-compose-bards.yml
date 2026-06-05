@@ -1,0 +1,30 @@
+# "Bards + regex" (hybrid) stack: the custom analyzer image plus the stock
+# anonymizer. Build locally with `docker compose -f docker-compose-bards.yml build`
+# or pull the GHCR images published by .github/workflows/build-bards-hybrid.yml.
+services:
+  presidio-anonymizer:
+    image: ${REGISTRY_NAME:-ghcr.io/mayflower/}presidio-anonymizer${TAG:-:latest}
+    build:
+      context: ./presidio-anonymizer
+    environment:
+      - PORT=5001
+    ports:
+      - "5001:5001"
+
+  presidio-analyzer-bards:
+    image: ${REGISTRY_NAME:-ghcr.io/mayflower/}presidio-analyzer-bards${TAG:-:latest}
+    build:
+      context: ./presidio-analyzer
+      dockerfile: Dockerfile.bards
+    environment:
+      - PORT=5001
+    ports:
+      - "5002:5001"
+    # Bards loads one model per registered language (en/de/fr/it). Give the
+    # container enough memory; lower it if you trim the language set.
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+        reservations:
+          memory: 6g

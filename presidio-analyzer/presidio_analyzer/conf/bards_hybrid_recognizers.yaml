@@ -1,0 +1,46 @@
+# Recognizer registry for the "Bards + regex" (hybrid) image — the benchmarked
+# optimal setup: deterministic regex/checksum recognizers own the structured
+# identifiers, and BardsEuPiiRecognizer owns the free-text / contextual PII.
+#
+# Only the recognizers listed here are loaded (no other predefined recognizers),
+# keeping the registry focused on the hybrid layer.
+supported_languages:
+  - en
+  - de
+  - fr
+  - it
+global_regex_flags: 26
+
+recognizers:
+  # spaCy NER is disabled — BardsEuPiiRecognizer owns PERSON / LOCATION / etc.
+  # (spaCy is still loaded for tokenization via bards_hybrid.yaml).
+  - name: SpacyRecognizer
+    type: predefined
+    enabled: false
+
+  # --- Deterministic structured-PII layer (regex / checksum) ---
+  - name: EmailRecognizer
+    type: predefined
+  - name: PhoneRecognizer
+    type: predefined
+  - name: CreditCardRecognizer
+    type: predefined
+  - name: IbanRecognizer
+    type: predefined
+  - name: IpRecognizer
+    type: predefined
+  - name: UrlRecognizer
+    type: predefined
+
+  # --- Bards EU-PII (hybrid) ---
+  # Owns free-text NER; the structured labels below are dropped so the
+  # deterministic recognizers above own e-mail / phone / IP / card / URL.
+  - name: BardsEuPiiRecognizer
+    type: predefined
+    threshold: 0.4
+    labels_to_ignore:
+      - EMAIL_ADDRESS
+      - PHONE_NUMBER
+      - IP_ADDRESS
+      - PAYMENT_CARD
+      - IDENTIFYING_LINK
