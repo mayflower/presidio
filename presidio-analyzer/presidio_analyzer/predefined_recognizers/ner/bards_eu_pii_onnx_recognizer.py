@@ -170,6 +170,33 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
             self._onnx_inter_op_num_threads,
         )
 
+    def _resolve_model_dir(self) -> str:
+        """Resolve the model repo to a local snapshot directory.
+
+        Downloads only the config, tokenizer and the single quantized ONNX file
+        into the Hugging Face cache and returns the snapshot directory. The load
+        below is then handed this *local path* (not the repo id), so Optimum and
+        transformers read the files straight from disk and never call the Hugging
+        Face repo-tree API. That call has no offline cache fallback, so on a
+        baked, offline image (``HF_HUB_OFFLINE=1``) it would otherwise abort the
+        load; resolving a local dir makes the offline image load purely from the
+        baked cache. Online (e.g. at image-build time) the files are fetched once
+        and cached.
+        """
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(
+            self.model_name,
+            allow_patterns=[
+                "*.json",
+                "*.txt",
+                "*.model",
+                "tokenizer*",
+                "sentencepiece*",
+                f"{self._onnx_model_subfolder}/{self._onnx_model_file}",
+            ],
+        )
+
     def _build_ort_model_and_tokenizer(self) -> Tuple[Any, Any]:
         """Build the ORT model and tokenizer (lazy-imports the bards-onnx extra)."""
         try:
@@ -193,24 +220,29 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         if self._onnx_inter_op_num_threads is not None:
             session_options.inter_op_num_threads = self._onnx_inter_op_num_threads
 
-        # The upstream repo keeps the ONNX weights in a subfolder (``onnx/``) but
-        # the model config and tokenizer at the repo root. Load the config from
-        # the root and pass it explicitly so Optimum does not look for a (missing)
-        # ``config.json`` inside the ONNX subfolder, which would fail with
-        # "Unrecognized model ... should have a model_type key".
-        config = AutoConfig.from_pretrained(self.model_name)
+        # Resolve a local snapshot dir and load from it (no runtime HF API call,
+        # so the offline image loads from the baked cache). The upstream repo
+        # keeps the ONNX weights in a subfolder (``onnx/``) but the config and
+        # tokenizer at the root, so the config is loaded from the root and passed
+        # explicitly (otherwise Optimum looks for a missing ``config.json`` inside
+        # the subfolder and fails with "Unrecognized model ... model_type").
+        model_dir = self._resolve_model_dir()
+        config = AutoConfig.from_pretrained(model_dir)
 
         model = ORTModelForTokenClassification.from_pretrained(
-            self.model_name,
+            model_dir,
             subfolder=self._onnx_model_subfolder,
             file_name=self._onnx_model_file,
             provider=self._onnx_provider,
             session_options=session_options,
             config=config,
         )
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.tokenizer_name or self.model_name
+        tokenizer_source = (
+            self.tokenizer_name
+            if self.tokenizer_name and self.tokenizer_name != self.model_name
+            else model_dir
         )
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
         return model, tokenizer
 
     def _load_or_get_cached_ort(self) -> Tuple[Any, Any]:
