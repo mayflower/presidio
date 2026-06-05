@@ -79,7 +79,10 @@ def fake_ort(monkeypatch):
     monkeypatch.setitem(sys.modules, "optimum", fake_optimum)
     monkeypatch.setitem(sys.modules, "optimum.onnxruntime", fake_optimum_ort)
 
-    # patch transformers AutoTokenizer.from_pretrained + pipeline
+    # patch transformers AutoConfig + AutoTokenizer.from_pretrained + pipeline
+    config = MagicMock(name="config")
+    config_loader = MagicMock(return_value=config)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", config_loader)
     tokenizer = MagicMock(name="tokenizer")
     tokenizer_loader = MagicMock(return_value=tokenizer)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", tokenizer_loader)
@@ -92,6 +95,8 @@ def fake_ort(monkeypatch):
         pipeline_factory=pipeline_factory,
         ort_model_cls=ort_model_cls,
         ort_model=model,
+        config_loader=config_loader,
+        config=config,
         tokenizer_loader=tokenizer_loader,
         tokenizer=tokenizer,
     )
@@ -222,6 +227,10 @@ def test_loads_quantized_onnx_with_enable_all(fake_ort):
     assert kwargs["file_name"] == "model_quantized.onnx"
     assert kwargs["provider"] == "CPUExecutionProvider"
     assert kwargs["session_options"].graph_optimization_level == "ORT_ENABLE_ALL"
+    # Config is loaded from the repo root (the onnx/ subfolder has no config.json)
+    # and passed explicitly, so Optimum does not try to read it from the subfolder.
+    fake_ort.config_loader.assert_called_once_with(onnx_module.DEFAULT_EU_PII_MODEL)
+    assert kwargs["config"] is fake_ort.config
     # pipeline built with the inherited aggregation strategy
     _, pkwargs = fake_ort.pipeline_factory.call_args
     assert pkwargs["aggregation_strategy"] == "first"
