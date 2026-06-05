@@ -1,0 +1,50 @@
+# Recognizer registry for the "Bards + regex" (hybrid) image — PyTorch backend.
+#
+# Escape hatch / compatibility config: identical to bards_hybrid_recognizers.yaml
+# (the CPU-optimized ONNX default) except the NER backend is BardsEuPiiRecognizer,
+# which runs the PyTorch checkpoint. Use this if you need the PyTorch path (e.g.
+# GPU, or to match the original behavior). Build the image with
+# Dockerfile.bards's BARDS_BACKEND=pytorch arg and point
+# RECOGNIZER_REGISTRY_CONF_FILE at this file.
+#
+# Only the recognizers listed here are loaded (no other predefined recognizers).
+supported_languages:
+  - en
+  - de
+  - fr
+  - it
+global_regex_flags: 26
+
+recognizers:
+  # spaCy NER is disabled — Bards owns PERSON / LOCATION / etc.
+  # (spaCy is still loaded for tokenization via bards_hybrid.yaml).
+  - name: SpacyRecognizer
+    type: predefined
+    enabled: false
+
+  # --- Deterministic structured-PII layer (regex / checksum) ---
+  - name: EmailRecognizer
+    type: predefined
+  - name: PhoneRecognizer
+    type: predefined
+  - name: CreditCardRecognizer
+    type: predefined
+  - name: IbanRecognizer
+    type: predefined
+  - name: IpRecognizer
+    type: predefined
+  - name: UrlRecognizer
+    type: predefined
+
+  # --- Bards EU-PII (hybrid), PyTorch ---
+  # Owns free-text NER; the structured labels below are dropped so the
+  # deterministic recognizers above own e-mail / phone / IP / card / URL.
+  - name: BardsEuPiiRecognizer
+    type: predefined
+    threshold: 0.4
+    labels_to_ignore:
+      - EMAIL_ADDRESS
+      - PHONE_NUMBER
+      - IP_ADDRESS
+      - PAYMENT_CARD
+      - IDENTIFYING_LINK

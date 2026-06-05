@@ -1,20 +1,41 @@
-# "Bards + regex" (hybrid) analyzer image.
+# "Bards + regex" (hybrid) analyzer image — CPU-optimized ONNX Runtime by default.
 #
-# Deterministic regex/checksum recognizers own structured identifiers and
-# BardsEuPiiRecognizer owns free-text PII (see conf/bards_hybrid_recognizers.yaml).
-# The Bards model is baked into the image's Hugging Face cache at build time, so
-# the container is self-contained and never downloads a model at runtime.
+# Deterministic regex/checksum recognizers own structured identifiers and Bards
+# owns free-text PII (see conf/bards_hybrid_recognizers.yaml). By default the NER
+# backend is BardsEuPiiOnnxRecognizer, running the upstream quantized
+# onnx/model_quantized.onnx on CPU via Optimum ONNX Runtime. The model is baked
+# into the image's Hugging Face cache at build time, so the container is
+# self-contained and never downloads a model at runtime.
+#
+# PyTorch escape hatch — build the compatibility variant with:
+#   --build-arg BARDS_BACKEND=pytorch \
+#   --build-arg RECOGNIZER_REGISTRY_CONF_FILE=\
+#       presidio_analyzer/conf/bards_hybrid_recognizers_pytorch.yaml
 FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
 
 ARG NLP_CONF_FILE=presidio_analyzer/conf/bards_hybrid.yaml
 ARG ANALYZER_CONF_FILE=presidio_analyzer/conf/bards_hybrid_analyzer.yaml
 ARG RECOGNIZER_REGISTRY_CONF_FILE=presidio_analyzer/conf/bards_hybrid_recognizers.yaml
 ARG BARDS_MODEL=bardsai/eu-pii-anonimization-multilang
+# "onnx" (default) or "pytorch" — selects the extra installed and the recognizer
+# class whose model is baked into the image. The "onnx" path pulls torch only
+# transitively via Optimum; the "pytorch" path uses the transformers extra.
+ARG BARDS_BACKEND=onnx
 
 ENV PIP_NO_CACHE_DIR=1
 ENV POETRY_VIRTUALENVS_CREATE=false
 ENV PORT=3000
+# One worker by default; the ORT session is shared across languages in-process.
 ENV WORKERS=1
+# Avoid the tokenizers fork/parallelism warning + contention under gunicorn.
+ENV TOKENIZERS_PARALLELISM=false
+# ORT thread counts are intentionally left unset — the optimal values depend on
+# the CPU cores allocated to the container. Set ORT_INTRA_OP_THREADS to the
+# number of physical cores given to the container, then benchmark; leave
+# ORT_INTER_OP_THREADS=1 unless a benchmark shows otherwise. Keep
+# WORKERS * ORT_INTRA_OP_THREADS at or below those cores — oversubscribing (many
+# workers, each spawning many ORT threads) contends and runs slower. E.g.
+#   ORT_INTRA_OP_THREADS=<physical cores>  ORT_INTER_OP_THREADS=1
 
 # Keep the Hugging Face cache inside the image and serve fully offline at
 # runtime (the model is baked in below).
@@ -37,8 +58,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ./pyproject.toml /app/
+# Install the server extra plus the backend extra: bards-onnx (Optimum + ONNX
+# Runtime) for the default onnx backend, or transformers for pytorch. torch is
+# not installed explicitly; for onnx it comes in transitively via Optimum only.
 RUN pip install poetry==2.3.2 \
-    && poetry install --no-root --only=main -E server -E transformers
+    && poetry install --no-root --only=main -E server \
+       $([ "${BARDS_BACKEND}" = "pytorch" ] && echo "-E transformers" || echo "-E bards-onnx")
 
 # spaCy tokenization models declared in the NLP config
 COPY ./install_nlp_models.py /app/
@@ -48,20 +73,23 @@ RUN poetry run python install_nlp_models.py \
 
 COPY . /app/
 
-# Bake the Bards model into the image's HF cache (download enabled only for this
-# step). Instantiating the recognizer warms exactly the files transformers needs
-# at runtime; HF_HUB_OFFLINE=1 above then guarantees no runtime download.
+# Bake the model into the image's HF cache (download enabled only for this step).
+# Instantiating the recognizer warms exactly the files needed at runtime — the
+# quantized onnx/model_quantized.onnx for the default onnx backend, the PyTorch
+# checkpoint for pytorch; HF_HUB_OFFLINE=1 above then guarantees no runtime
+# download.
 RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 poetry run python -c \
-    "from presidio_analyzer.predefined_recognizers import BardsEuPiiRecognizer; \
-BardsEuPiiRecognizer(model_name='${BARDS_MODEL}')"
+    "cls = 'BardsEuPiiRecognizer' if '${BARDS_BACKEND}' == 'pytorch' else 'BardsEuPiiOnnxRecognizer'; \
+mod = __import__('presidio_analyzer.predefined_recognizers', fromlist=[cls]); \
+getattr(mod, cls)(model_name='${BARDS_MODEL}')"
 
 # Non-root user; ownership covers the baked HF cache under /app/.cache.
 RUN useradd -m -u 1001 presidio && chown -R presidio:presidio /app
 USER 1001
 
 EXPOSE ${PORT}
-# Bards loads one model per registered language at startup, so allow a longer
-# warm-up before the health check counts failures.
+# The NER model is loaded at startup (the ONNX session is shared across the
+# registered languages), so allow a longer warm-up before counting failures.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=120s --retries=5 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 CMD ["./entrypoint.sh"]
