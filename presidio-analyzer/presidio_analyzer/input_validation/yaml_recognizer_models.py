@@ -575,5 +575,10 @@ CONFIG_MODEL_MAP: Dict[str, Type[BaseModel]] = {
     # constructor, so it reuses HuggingFaceRecognizerConfig (already present in
     # the RecognizerRegistryConfig.recognizers Union, so no field-drop on dump).
     "BardsEuPiiRecognizer": HuggingFaceRecognizerConfig,
+    # The ONNX variant shares BardsEuPiiRecognizer's constructor plus ONNX-only
+    # kwargs (provider, onnx_file_name, ORT thread options, ...). It reuses
+    # HuggingFaceRecognizerConfig, whose ``extra="allow"`` passes those extra
+    # fields through to the recognizer constructor.
+    "BardsEuPiiOnnxRecognizer": HuggingFaceRecognizerConfig,
     "GLiNERRecognizer": GLiNERRecognizerConfig,
 }

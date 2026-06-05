@@ -100,6 +100,12 @@ class HuggingFaceNerRecognizer(LocalRecognizer):
     }
     DEFAULT_HF_TASK = "token-classification"
 
+    # Whether this recognizer requires PyTorch. The default torch pipeline path
+    # does; subclasses that run inference through another backend (e.g. an ONNX
+    # Runtime session) set this to ``False`` so they can be constructed and used
+    # without torch. ``transformers`` is still required by all paths.
+    REQUIRES_TORCH = True
+
     def __init__(
         self,
         supported_entities: Optional[List[str]] = None,
@@ -155,7 +161,7 @@ class HuggingFaceNerRecognizer(LocalRecognizer):
                 "transformers is not installed. Please install it "
                 "(pip install transformers torch) to use this recognizer."
             )
-        if torch is None:
+        if self.REQUIRES_TORCH and torch is None:
             raise ImportError(
                 "torch is not installed. Please install it "
                 "(pip install torch) to use this recognizer."
