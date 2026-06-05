@@ -175,7 +175,7 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         try:
             import onnxruntime as ort
             from optimum.onnxruntime import ORTModelForTokenClassification
-            from transformers import AutoTokenizer
+            from transformers import AutoConfig, AutoTokenizer
         except ImportError as exc:
             raise ImportError(
                 "BardsEuPiiOnnxRecognizer requires Optimum and ONNX Runtime. "
@@ -193,12 +193,20 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         if self._onnx_inter_op_num_threads is not None:
             session_options.inter_op_num_threads = self._onnx_inter_op_num_threads
 
+        # The upstream repo keeps the ONNX weights in a subfolder (``onnx/``) but
+        # the model config and tokenizer at the repo root. Load the config from
+        # the root and pass it explicitly so Optimum does not look for a (missing)
+        # ``config.json`` inside the ONNX subfolder, which would fail with
+        # "Unrecognized model ... should have a model_type key".
+        config = AutoConfig.from_pretrained(self.model_name)
+
         model = ORTModelForTokenClassification.from_pretrained(
             self.model_name,
             subfolder=self._onnx_model_subfolder,
             file_name=self._onnx_model_file,
             provider=self._onnx_provider,
             session_options=session_options,
+            config=config,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             self.tokenizer_name or self.model_name
