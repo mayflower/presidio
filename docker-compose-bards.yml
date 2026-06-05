@@ -20,11 +20,12 @@ services:
       - PORT=5001
     ports:
       - "5002:5001"
-    # Bards loads one model per registered language (en/de/fr/it). Give the
-    # container enough memory; lower it if you trim the language set.
+    # The model ships as safetensors and is mmap-loaded, so the four language
+    # instances (en/de/fr/it) share the weight pages — ~1.1 GB of model RAM
+    # combined, not per language. ~2 GB working set total; this leaves headroom.
     deploy:
       resources:
         limits:
-          memory: 8g
+          memory: 3g
         reservations:
-          memory: 6g
+          memory: 1500m

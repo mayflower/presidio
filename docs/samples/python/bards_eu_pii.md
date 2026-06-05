@@ -576,10 +576,12 @@ docker compose -f docker-compose-bards.yml up -d
 docker compose -f docker-compose-bards.yml build
 ```
 
-The image ships with **en, de, fr, it**. Because Presidio registers a recognizer
-per language, the analyzer loads **one Bards model per registered language** at
-startup — plan for ~6–8 GB RAM with four languages, and trim the language set in
-the three `bards_hybrid*.yaml` configs (and rebuild) to reduce the footprint.
+The image ships with **en, de, fr, it**. Presidio registers a Bards instance per
+language, but the model ships as `safetensors` and is mmap-loaded, so all
+instances **share the same weight pages** — the four languages cost about
+**1.1 GB of model RAM combined** (measured), not 4× the model. Budget roughly
+**2 GB** for the analyzer; trim the language set in the three `bards_hybrid*.yaml`
+configs (and rebuild) only if you need to shave the remaining overhead.
 
 ## Limitations
 
