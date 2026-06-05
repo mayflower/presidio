@@ -1,9 +1,12 @@
 name: Build Bards-hybrid images
 
-# Builds and pushes the "Bards + regex" (hybrid) Presidio stack to GHCR:
+# Builds and pushes the "Bards + regex" (hybrid) Presidio stack to GHCR as
+# multi-arch (linux/amd64 + linux/arm64) images:
 #   - presidio-analyzer-bards  (Dockerfile.bards, Bards model baked in)
 #   - presidio-anonymizer      (stock image, for a complete pair)
-# Auth uses the built-in GITHUB_TOKEN — no extra secrets required.
+# Each platform is built on a native runner (no QEMU emulation) and the
+# per-platform images are merged into multi-arch manifests. Auth uses the
+# built-in GITHUB_TOKEN — no extra secrets required.
 
 on:
   push:
@@ -22,9 +25,9 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
-    name: Build & push ${{ matrix.image }}
-    runs-on: ubuntu-latest
+  build-platform-images:
+    name: Build ${{ matrix.image }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -33,9 +36,23 @@ jobs:
           - image: presidio-analyzer-bards
             context: ./presidio-analyzer
             dockerfile: Dockerfile.bards
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - image: presidio-analyzer-bards
+            context: ./presidio-analyzer
+            dockerfile: Dockerfile.bards
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - image: presidio-anonymizer
             context: ./presidio-anonymizer
             dockerfile: Dockerfile
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - image: presidio-anonymizer
+            context: ./presidio-anonymizer
+            dockerfile: Dockerfile
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.0
@@ -50,37 +67,84 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Compute image metadata
+      - name: Compute metadata
+        id: meta
+        run: |
+          set -eu
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          plat="$(echo '${{ matrix.platform }}' | tr '/' '-')"
+          {
+            echo "image=ghcr.io/${owner_lc}/${{ matrix.image }}"
+            echo "sha_tag=sha-${GITHUB_SHA::7}"
+            echo "platform_tag=${plat}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image }} (${{ matrix.platform }})
+        run: |
+          set -eu
+          IMAGE="${{ steps.meta.outputs.image }}"
+          PT="${{ steps.meta.outputs.platform_tag }}"
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --provenance=false \
+            --push \
+            --file "${{ matrix.context }}/${{ matrix.dockerfile }}" \
+            --tag "${IMAGE}:${{ steps.meta.outputs.sha_tag }}-${PT}" \
+            --cache-from "type=registry,ref=${IMAGE}:buildcache-${PT}" \
+            --cache-to "type=registry,ref=${IMAGE}:buildcache-${PT},mode=max" \
+            "${{ matrix.context }}"
+
+  create-manifests:
+    name: Create multi-arch manifests
+    runs-on: ubuntu-latest
+    needs: build-platform-images
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Compute metadata
         id: meta
         run: |
           set -eu
           owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           {
-            echo "image=ghcr.io/${owner_lc}/${{ matrix.image }}"
-            echo "ref_tag=${GITHUB_REF_NAME//\//-}"
+            echo "owner=${owner_lc}"
             echo "sha_tag=sha-${GITHUB_SHA::7}"
+            echo "ref_tag=${GITHUB_REF_NAME//\//-}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ${{ matrix.image }}
+      - name: Merge per-platform images into multi-arch manifests
         run: |
           set -eu
-          IMAGE="${{ steps.meta.outputs.image }}"
-          docker buildx build \
-            --file "${{ matrix.context }}/${{ matrix.dockerfile }}" \
-            --push \
-            --tag "${IMAGE}:${{ steps.meta.outputs.ref_tag }}" \
-            --tag "${IMAGE}:${{ steps.meta.outputs.sha_tag }}" \
-            --tag "${IMAGE}:latest" \
-            --cache-from "type=registry,ref=${IMAGE}:buildcache" \
-            --cache-to "type=registry,ref=${IMAGE}:buildcache,mode=max" \
-            "${{ matrix.context }}"
+          OWNER="${{ steps.meta.outputs.owner }}"
+          SHA="${{ steps.meta.outputs.sha_tag }}"
+          REF="${{ steps.meta.outputs.ref_tag }}"
+          for img in presidio-analyzer-bards presidio-anonymizer; do
+            IMAGE="ghcr.io/${OWNER}/${img}"
+            echo "Creating multi-arch manifest for ${IMAGE}"
+            docker buildx imagetools create \
+              --tag "${IMAGE}:latest" \
+              --tag "${IMAGE}:${SHA}" \
+              --tag "${IMAGE}:${REF}" \
+              "${IMAGE}:${SHA}-linux-amd64" \
+              "${IMAGE}:${SHA}-linux-arm64"
+          done
 
       - name: Summary
         run: |
+          set -eu
+          OWNER="${{ steps.meta.outputs.owner }}"
+          SHA="${{ steps.meta.outputs.sha_tag }}"
+          REF="${{ steps.meta.outputs.ref_tag }}"
           {
-            echo "### Pushed \`${{ matrix.image }}\`"
+            echo "### Pushed multi-arch images (linux/amd64 + linux/arm64)"
             echo ""
-            echo "- \`${{ steps.meta.outputs.image }}:latest\`"
-            echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}\`"
-            echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}\`"
+            for img in presidio-analyzer-bards presidio-anonymizer; do
+              echo "- \`ghcr.io/${OWNER}/${img}\`: \`latest\`, \`${SHA}\`, \`${REF}\`"
+            done
           } >> "$GITHUB_STEP_SUMMARY"
