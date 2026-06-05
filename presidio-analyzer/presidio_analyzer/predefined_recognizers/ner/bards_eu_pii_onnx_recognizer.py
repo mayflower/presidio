@@ -1,19 +1,22 @@
 """ONNX Runtime (INT8) variant of :class:`BardsEuPiiRecognizer` for CPU.
 
 Runs the ``bardsai/eu-pii-anonimization-multilang`` model on CPU through the
-upstream quantized ONNX file (``onnx/model_quantized.onnx``) via Optimum ONNX
-Runtime, instead of the PyTorch checkpoint. It is a thin subclass of
+upstream quantized ONNX file (``onnx/model_quantized.onnx``) with **ONNX Runtime
+only** — no PyTorch and no Optimum. Inference is a plain
+``onnxruntime.InferenceSession`` plus the model's fast tokenizer and a small
+numpy BIO-aggregation step; the transformers ``token-classification`` pipeline
+(which would pull in torch) is not used. It is a subclass of
 :class:`BardsEuPiiRecognizer`: the default model id, entity mapping, mapping
 profiles, thresholds, ``thresholds_by_entity`` / ``thresholds_by_language``,
-``labels_to_ignore``, the :meth:`hybrid` constructor and the aggregation strategy
-are all inherited. Only model loading differs.
+``labels_to_ignore``, the :meth:`hybrid` constructor and the label/threshold
+logic are all inherited. Only model loading and the raw inference differ.
 
 The default PyTorch :class:`BardsEuPiiRecognizer` is unchanged; this recognizer
-is opt-in (registered explicitly in code or in a YAML registry config). All
-ONNX-specific dependencies (``optimum``, ``onnxruntime``) are imported lazily,
-only in the ONNX load path, so importing this module — and the normal unit
-tests — do not require them, and the recognizer can be constructed without torch.
-Install them with ``pip install 'presidio-analyzer[bards-onnx]'``.
+is opt-in (registered explicitly in code or in a YAML registry config). The
+ONNX-specific dependencies (``onnxruntime``, ``transformers`` for the tokenizer)
+are imported lazily, only in the load path, so importing this module — and the
+normal unit tests — do not require them, and the recognizer can be constructed
+without torch. Install them with ``pip install 'presidio-analyzer[bards-onnx]'``.
 """
 
 import logging
@@ -35,15 +38,18 @@ logger = logging.getLogger("presidio-analyzer")
 DEFAULT_ONNX_MODEL_SUBFOLDER = "onnx"
 DEFAULT_ONNX_MODEL_FILE = "model_quantized.onnx"
 DEFAULT_ONNX_PROVIDER = "CPUExecutionProvider"
+#: Hard cap on tokens fed to the model (XLM-RoBERTa positional limit). The text
+#: chunker keeps chunks well under this; truncation here is only a safety net.
+DEFAULT_ONNX_MAX_LENGTH = 512
 
-# Module-level cache of loaded ORT models, keyed by everything that affects the
-# loaded model/session (see ``_cache_key``). Multiple per-language recognizer
-# instances that share a key reuse one heavy ORT model + tokenizer; each instance
-# still builds its own lightweight transformers pipeline (and ignored-label
-# filter) around it, so no per-recognizer mutable state (labels_to_ignore,
-# thresholds) is shared through the cache.
-_ORT_MODEL_CACHE: Dict[Tuple[Any, ...], Tuple[Any, Any]] = {}
-_ORT_MODEL_CACHE_LOCK = threading.Lock()
+# Module-level cache of loaded ORT sessions, keyed by everything that affects the
+# loaded session (see ``_cache_key``). Multiple per-language recognizer instances
+# that share a key reuse one heavy ORT session + tokenizer; each instance still
+# builds its own lightweight inference pipeline (and ignored-label filter) around
+# it, so no per-recognizer mutable state (labels_to_ignore, thresholds) is shared
+# through the cache.
+_ORT_SESSION_CACHE: Dict[Tuple[Any, ...], Tuple[Any, Any, Dict[int, str]]] = {}
+_ORT_SESSION_CACHE_LOCK = threading.Lock()
 
 
 def _resolve_threads(explicit: Optional[int], env_name: str) -> Optional[int]:
@@ -71,18 +77,98 @@ def _resolve_threads(explicit: Optional[int], env_name: str) -> Optional[int]:
     return value
 
 
+class _OnnxTokenClassificationPipeline:
+    """Torch-free token-classification pipeline over an ONNX Runtime session.
+
+    Mimics the slice of the transformers token-classification pipeline that
+    :class:`BardsEuPiiRecognizer` consumes: calling the instance with a string
+    returns a list of ``{"entity_group", "score", "start", "end", "word"}`` dicts
+    with the BIO tags already aggregated into character spans. Inference is ONNX
+    Runtime + numpy only, so no torch / Optimum is required.
+
+    Aggregation merges consecutive tokens that share an entity type (the model
+    BIO-tags every sub-word, so ``B-``/``I-`` is not a reliable word boundary);
+    an ``O`` token ends the current span. The span score is the first token's
+    probability (``aggregation_strategy="first"`` semantics).
+    """
+
+    def __init__(
+        self,
+        session: Any,
+        tokenizer: Any,
+        id2label: Dict[int, str],
+        max_length: int = DEFAULT_ONNX_MAX_LENGTH,
+    ):
+        self._session = session
+        self._tokenizer = tokenizer
+        self._id2label = id2label
+        self._max_length = max_length
+        self._input_names = {model_input.name for model_input in session.get_inputs()}
+        self._output_name = session.get_outputs()[0].name
+
+    def __call__(self, text: str) -> List[Dict[str, Any]]:
+        """Run ONNX inference on ``text`` and return aggregated entity spans."""
+        import numpy as np
+
+        if not text:
+            return []
+        encoding = self._tokenizer(
+            text,
+            return_offsets_mapping=True,
+            return_tensors="np",
+            truncation=True,
+            max_length=self._max_length,
+        )
+        offsets = encoding["offset_mapping"][0]
+        feeds = {
+            name: encoding[name].astype(np.int64)
+            for name in self._input_names
+            if name in encoding
+        }
+        logits = self._session.run([self._output_name], feeds)[0][0]
+        shifted = logits - logits.max(axis=-1, keepdims=True)
+        exp = np.exp(shifted)
+        probs = exp / exp.sum(axis=-1, keepdims=True)
+        label_ids = probs.argmax(axis=-1)
+
+        spans: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+        for index, (label_id, (start, end)) in enumerate(zip(label_ids, offsets)):
+            if start == end:  # special / empty token (offset (0, 0))
+                current = None
+                continue
+            label = self._id2label.get(int(label_id), "O")
+            if label == "O":
+                current = None
+                continue
+            entity = label.split("-", 1)[-1]  # strip the B-/I- prefix
+            if current is not None and current["entity_group"] == entity:
+                current["end"] = int(end)  # extend across sub-words / adjacent words
+            else:
+                current = {
+                    "entity_group": entity,
+                    "score": float(probs[index, label_id]),
+                    "start": int(start),
+                    "end": int(end),
+                }
+                spans.append(current)
+        for span in spans:
+            span["word"] = text[span["start"] : span["end"]]
+        return spans
+
+
 class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
     """ONNX Runtime variant of :class:`BardsEuPiiRecognizer` for CPU inference.
 
-    Loads the upstream quantized ONNX file with Optimum's
-    ``ORTModelForTokenClassification`` and an ``AutoTokenizer``, then runs it
-    through a standard transformers ``token-classification`` pipeline — so all of
-    the parent's BIO aggregation, chunking, label mapping, thresholding and
-    ``labels_to_ignore`` behavior applies unchanged.
+    Loads the upstream quantized ONNX file into an ``onnxruntime.InferenceSession``
+    and runs it through a small torch-free pipeline (tokenizer + numpy BIO
+    aggregation), so all of the parent's label mapping, thresholding and
+    ``labels_to_ignore`` behavior applies unchanged — but the image needs neither
+    torch nor Optimum.
 
     Requires the ``bards-onnx`` extra (``pip install
-    'presidio-analyzer[bards-onnx]'`` — Optimum + ONNX Runtime); torch is not
-    required to construct this recognizer.
+    'presidio-analyzer[bards-onnx]'`` — ONNX Runtime + transformers for the
+    tokenizer); torch is not required to construct or run this recognizer.
 
     :param onnx_model_subfolder: Subfolder in the model repo holding the ONNX
         file. Defaults to :data:`DEFAULT_ONNX_MODEL_SUBFOLDER` (``"onnx"``).
@@ -159,7 +245,7 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         )
 
     def _cache_key(self) -> Tuple[Any, ...]:
-        """Return the ORT-model cache key (everything affecting the session)."""
+        """Return the ORT-session cache key (everything affecting the session)."""
         return (
             self.model_name,
             self.tokenizer_name or self.model_name,
@@ -175,13 +261,12 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
 
         Downloads only the config, tokenizer and the single quantized ONNX file
         into the Hugging Face cache and returns the snapshot directory. The load
-        below is then handed this *local path* (not the repo id), so Optimum and
-        transformers read the files straight from disk and never call the Hugging
-        Face repo-tree API. That call has no offline cache fallback, so on a
-        baked, offline image (``HF_HUB_OFFLINE=1``) it would otherwise abort the
-        load; resolving a local dir makes the offline image load purely from the
-        baked cache. Online (e.g. at image-build time) the files are fetched once
-        and cached.
+        below reads files straight from this local path (not the repo id) and
+        never calls the Hugging Face repo-tree API. That call has no offline cache
+        fallback, so on a baked, offline image (``HF_HUB_OFFLINE=1``) it would
+        otherwise abort the load; resolving a local dir makes the offline image
+        load purely from the baked cache. Online (e.g. at image-build time) the
+        files are fetched once and cached.
         """
         from huggingface_hub import snapshot_download
 
@@ -197,15 +282,22 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
             ],
         )
 
-    def _build_ort_model_and_tokenizer(self) -> Tuple[Any, Any]:
-        """Build the ORT model and tokenizer (lazy-imports the bards-onnx extra)."""
+    def _build_session_tokenizer_labels(
+        self,
+    ) -> Tuple[Any, Any, Dict[int, str]]:
+        """Build the ORT session, tokenizer and id->label map (torch-free).
+
+        Lazy-imports the ``bards-onnx`` extra (ONNX Runtime + transformers); no
+        torch or Optimum is involved. The session is built straight from the local
+        quantized ONNX file with ``ORT_ENABLE_ALL`` and the resolved thread
+        counts; the tokenizer and ``id2label`` come from the snapshot root.
+        """
         try:
             import onnxruntime as ort
-            from optimum.onnxruntime import ORTModelForTokenClassification
             from transformers import AutoConfig, AutoTokenizer
         except ImportError as exc:
             raise ImportError(
-                "BardsEuPiiOnnxRecognizer requires Optimum and ONNX Runtime. "
+                "BardsEuPiiOnnxRecognizer requires ONNX Runtime and transformers. "
                 "Install them with: "
                 "pip install 'presidio-analyzer[bards-onnx]'. "
                 f"Original error: {exc}"
@@ -220,27 +312,16 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         if self._onnx_inter_op_num_threads is not None:
             session_options.inter_op_num_threads = self._onnx_inter_op_num_threads
 
-        # Resolve a local snapshot dir and load from it (no runtime HF API call,
-        # so the offline image loads from the baked cache). The upstream repo
-        # keeps the ONNX weights in a subfolder (``onnx/``) but the config and
-        # tokenizer at the root, so the config is loaded from the root and passed
-        # explicitly (otherwise Optimum looks for a missing ``config.json`` inside
-        # the subfolder and fails with "Unrecognized model ... model_type").
-        # Load from the local snapshot dir: the config/tokenizer at its root and
-        # the ONNX weights in the ``onnx/`` subfolder. The config is passed
-        # explicitly (the subfolder has no ``config.json``). Optimum >= 2 is
-        # required (pinned in the ``bards-onnx`` extra) so the local-dir
-        # ``subfolder`` handling here is well-defined; Optimum 1.x ignored
-        # ``subfolder`` for a local dir and could not find the file.
         model_dir = self._resolve_model_dir()
-        config = AutoConfig.from_pretrained(model_dir)
-        model = ORTModelForTokenClassification.from_pretrained(
-            model_dir,
-            subfolder=self._onnx_model_subfolder,
-            file_name=self._onnx_model_file,
-            provider=self._onnx_provider,
-            session_options=session_options,
-            config=config,
+        onnx_path = (
+            os.path.join(model_dir, self._onnx_model_subfolder, self._onnx_model_file)
+            if self._onnx_model_subfolder
+            else os.path.join(model_dir, self._onnx_model_file)
+        )
+        session = ort.InferenceSession(
+            onnx_path,
+            sess_options=session_options,
+            providers=[self._onnx_provider],
         )
         tokenizer_source = (
             self.tokenizer_name
@@ -248,36 +329,27 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
             else model_dir
         )
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
-        return model, tokenizer
+        config = AutoConfig.from_pretrained(model_dir)
+        id2label = {int(key): value for key, value in config.id2label.items()}
+        return session, tokenizer, id2label
 
-    def _load_or_get_cached_ort(self) -> Tuple[Any, Any]:
-        """Return the cached ORT model + tokenizer for this config, building once."""
+    def _load_or_get_cached_session(self) -> Tuple[Any, Any, Dict[int, str]]:
+        """Return the cached ORT session + tokenizer + labels, building once."""
         key = self._cache_key()
-        cached = _ORT_MODEL_CACHE.get(key)
+        cached = _ORT_SESSION_CACHE.get(key)
         if cached is not None:
             return cached
-        with _ORT_MODEL_CACHE_LOCK:
-            cached = _ORT_MODEL_CACHE.get(key)
+        with _ORT_SESSION_CACHE_LOCK:
+            cached = _ORT_SESSION_CACHE.get(key)
             if cached is None:
-                cached = self._build_ort_model_and_tokenizer()
-                _ORT_MODEL_CACHE[key] = cached
+                cached = self._build_session_tokenizer_labels()
+                _ORT_SESSION_CACHE[key] = cached
             return cached
-
-    def _build_token_pipeline(self, model: Any, tokenizer: Any) -> Any:
-        """Build a transformers token-classification pipeline over the ORT model."""
-        from transformers import pipeline as hf_pipeline
-
-        return hf_pipeline(
-            self.DEFAULT_HF_TASK,
-            model=model,
-            tokenizer=tokenizer,
-            aggregation_strategy=self.aggregation_strategy,
-        )
 
     def load(self) -> None:
         """Load the ORT-backed pipeline, then install the ignored-label filter.
 
-        Reuses a cached ORT model + tokenizer across instances with the same
+        Reuses a cached ORT session + tokenizer across instances with the same
         configuration and builds a fresh per-instance pipeline around it, so the
         per-recognizer ignored-label filter is never shared. Overrides the
         parent's torch pipeline loader entirely.
@@ -289,8 +361,10 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
                 "model_name must be set before calling load(). "
                 "Pass it to __init__() or set it directly."
             )
-        model, tokenizer = self._load_or_get_cached_ort()
-        self.ner_pipeline = self._build_token_pipeline(model, tokenizer)
+        session, tokenizer, id2label = self._load_or_get_cached_session()
+        self.ner_pipeline = _OnnxTokenClassificationPipeline(
+            session, tokenizer, id2label
+        )
         if self.labels_to_ignore and not self._ignore_filter_installed:
             self._install_ignore_filter()
 

@@ -1,13 +1,15 @@
 """Tests for the optional BardsEuPiiOnnxRecognizer.
 
-The unit tests never download a model and never require optimum / onnxruntime:
-the ONNX load path's lazy imports are faked in ``sys.modules`` (fake
-``onnxruntime`` and ``optimum.onnxruntime`` modules) and
-``transformers.AutoTokenizer.from_pretrained`` / ``transformers.pipeline`` are
-patched, so the real ``load()`` code (session options, ``from_pretrained``,
-pipeline build, the cache, the ignored-label filter, thresholding) is exercised
-against fakes. A single opt-in integration test downloads the real quantized
-ONNX model and is skipped unless ``PRESIDIO_RUN_BARDS_EU_PII_ONNX_INTEGRATION=1``.
+The unit tests never download a model and never require torch / optimum: the
+load path's lazy imports are faked in ``sys.modules`` (a fake ``onnxruntime`` and
+a fake ``huggingface_hub.snapshot_download``) and
+``transformers.AutoTokenizer`` / ``transformers.AutoConfig`` are patched, so the
+real ``load()`` code (session options, the torch-free ONNX pipeline, BIO
+aggregation, the cache, the ignored-label filter, thresholding) runs against
+fakes. The fake tokenizer + session are driven by ``fake_ort.prime(...)`` so a
+test controls exactly which spans the model "predicts". A single opt-in
+integration test downloads the real quantized ONNX model and is skipped unless
+``PRESIDIO_RUN_BARDS_EU_PII_ONNX_INTEGRATION=1``.
 """
 
 import importlib
@@ -16,6 +18,7 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from presidio_analyzer.predefined_recognizers import BardsEuPiiOnnxRecognizer
@@ -27,16 +30,17 @@ from presidio_analyzer.predefined_recognizers.ner import (
 # lets the comparison tests build a real BardsEuPiiRecognizer without a download.
 HF_MODULE = "presidio_analyzer.predefined_recognizers.ner.huggingface_ner_recognizer"
 
-
-def _pred(entity_group, start, end, word, score=0.95):
-    """Build a HuggingFace token-classification prediction dict (aggregated)."""
-    return {
-        "entity_group": entity_group,
-        "score": score,
-        "word": word,
-        "start": start,
-        "end": end,
-    }
+# A small BIO label set the fakes expose as the model's id2label.
+_LABELS = [
+    "O",
+    "B-PERSON_NAME",
+    "I-PERSON_NAME",
+    "B-EMAIL_ADDRESS",
+    "I-EMAIL_ADDRESS",
+    "B-ETHNIC_ORIGIN",
+    "B-HEALTH_DATA",
+]
+_LABEL2ID = {label: idx for idx, label in enumerate(_LABELS)}
 
 
 class _FakeSessionOptions:
@@ -48,36 +52,74 @@ class _FakeSessionOptions:
         self.inter_op_num_threads = None
 
 
+class _NamedIO:
+    """Minimal ONNX input/output descriptor (only ``.name`` is used)."""
+
+    def __init__(self, name):
+        self.name = name
+
+
+def _logits_for(tokens):
+    """Build a ``[1, n, num_labels]`` logits array whose softmax yields ``prob``.
+
+    ``tokens`` is a list of ``(entity, start, end, prob)``; the row for each token
+    is shaped so ``softmax(row)[B-entity] == prob`` exactly.
+    """
+    num_labels = len(_LABELS)
+    rows = []
+    for entity, _start, _end, prob in tokens:
+        row = np.zeros(num_labels, dtype=np.float32)
+        row[_LABEL2ID[f"B-{entity}"]] = np.log(prob * (num_labels - 1) / (1.0 - prob))
+        rows.append(row)
+    if not rows:
+        rows = [np.zeros(num_labels, dtype=np.float32)]  # a single "O" token
+    return np.array([rows], dtype=np.float32)
+
+
 @pytest.fixture
 def fake_ort(monkeypatch):
-    """Fake the ONNX lazy imports so no optimum/onnxruntime/model is needed.
+    """Fake the ONNX load path so no torch/optimum/onnxruntime/model is needed.
 
-    Injects fake ``onnxruntime`` and ``optimum.onnxruntime`` modules and patches
-    ``transformers.AutoTokenizer.from_pretrained`` and ``transformers.pipeline``.
-    Yields a namespace exposing the patched mocks plus the fake (callable)
-    pipeline, whose ``return_value`` tests set to crafted predictions.
+    Injects a fake ``onnxruntime`` module and ``huggingface_hub.snapshot_download``
+    and patches ``transformers.AutoTokenizer`` / ``transformers.AutoConfig``. The
+    fake tokenizer + session are driven by the shared ``state`` list, which tests
+    set via ``prime(...)``. Yields a namespace exposing the fakes plus ``prime``.
     """
     transformers = importlib.import_module("transformers")
-    onnx_module._ORT_MODEL_CACHE.clear()
+    onnx_module._ORT_SESSION_CACHE.clear()
 
-    # fake onnxruntime
+    state = {"tokens": []}  # list of (entity, start, end, prob) for the next call
+    created = {"sessions": [], "options": []}
+
+    class _FakeInferenceSession:
+        def __init__(self, path, sess_options=None, providers=None):
+            self.path = path
+            self.sess_options = sess_options
+            self.providers = providers
+            created["sessions"].append(self)
+
+        def get_inputs(self):
+            return [_NamedIO("input_ids"), _NamedIO("attention_mask")]
+
+        def get_outputs(self):
+            return [_NamedIO("logits")]
+
+        def run(self, _output_names, _feeds):
+            return [_logits_for(state["tokens"])]
+
     fake_ort_mod = types.ModuleType("onnxruntime")
-    fake_ort_mod.SessionOptions = _FakeSessionOptions
+
+    def _session_options():
+        opts = _FakeSessionOptions()
+        created["options"].append(opts)
+        return opts
+
+    fake_ort_mod.SessionOptions = _session_options
     fake_ort_mod.GraphOptimizationLevel = types.SimpleNamespace(
         ORT_ENABLE_ALL="ORT_ENABLE_ALL"
     )
+    fake_ort_mod.InferenceSession = _FakeInferenceSession
     monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort_mod)
-
-    # fake optimum.onnxruntime.ORTModelForTokenClassification
-    model = MagicMock(name="ort_model")
-    ort_model_cls = MagicMock(name="ORTModelForTokenClassification")
-    ort_model_cls.from_pretrained = MagicMock(return_value=model)
-    fake_optimum = types.ModuleType("optimum")
-    fake_optimum_ort = types.ModuleType("optimum.onnxruntime")
-    fake_optimum_ort.ORTModelForTokenClassification = ort_model_cls
-    fake_optimum.onnxruntime = fake_optimum_ort
-    monkeypatch.setitem(sys.modules, "optimum", fake_optimum)
-    monkeypatch.setitem(sys.modules, "optimum.onnxruntime", fake_optimum_ort)
 
     # fake huggingface_hub.snapshot_download -> a local dir (no network)
     import huggingface_hub
@@ -86,30 +128,39 @@ def fake_ort(monkeypatch):
     snapshot_loader = MagicMock(return_value=model_dir)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_loader)
 
-    # patch transformers AutoConfig + AutoTokenizer.from_pretrained + pipeline
-    config = MagicMock(name="config")
-    config_loader = MagicMock(return_value=config)
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", config_loader)
-    tokenizer = MagicMock(name="tokenizer")
+    # fake tokenizer: offsets come from the primed tokens; ids are placeholders
+    def fake_tokenizer_call(text, **kwargs):
+        tokens = state["tokens"]
+        offsets = [[start, end] for (_e, start, end, _p) in tokens] or [[0, 0]]
+        n = len(offsets)
+        return {
+            "input_ids": np.ones((1, n), dtype=np.int64),
+            "attention_mask": np.ones((1, n), dtype=np.int64),
+            "offset_mapping": np.array([offsets], dtype=np.int64),
+        }
+
+    tokenizer = MagicMock(name="tokenizer", side_effect=fake_tokenizer_call)
     tokenizer_loader = MagicMock(return_value=tokenizer)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", tokenizer_loader)
-    pipe = MagicMock(name="pipeline_callable", return_value=[])
-    pipeline_factory = MagicMock(name="pipeline_factory", return_value=pipe)
-    monkeypatch.setattr(transformers, "pipeline", pipeline_factory)
+
+    config = types.SimpleNamespace(id2label=dict(enumerate(_LABELS)))
+    config_loader = MagicMock(return_value=config)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", config_loader)
+
+    def prime(tokens):
+        """Set the (entity, start, end, prob) spans the next analyze() predicts."""
+        state["tokens"] = list(tokens)
 
     yield types.SimpleNamespace(
-        pipe=pipe,
-        pipeline_factory=pipeline_factory,
-        ort_model_cls=ort_model_cls,
-        ort_model=model,
+        prime=prime,
         snapshot_loader=snapshot_loader,
         model_dir=model_dir,
         config_loader=config_loader,
-        config=config,
         tokenizer_loader=tokenizer_loader,
         tokenizer=tokenizer,
+        created=created,
     )
-    onnx_module._ORT_MODEL_CACHE.clear()
+    onnx_module._ORT_SESSION_CACHE.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -179,7 +230,6 @@ def test_hybrid_merges_structured_with_caller_labels(fake_ort):
     assert type(rec) is BardsEuPiiOnnxRecognizer
     assert STRUCTURED <= rec.labels_to_ignore
     assert "FINANCIAL_AMOUNT" in rec.labels_to_ignore
-    # Same merged set the PyTorch hybrid() would produce.
     assert rec.labels_to_ignore == set(STRUCTURED) | {"FINANCIAL_AMOUNT"}
 
 
@@ -193,23 +243,33 @@ def test_bio_prefixed_labels_to_ignore_normalized(fake_ort):
 
 
 # --------------------------------------------------------------------------- #
-# Inference exercises the inherited mapping / ignore / threshold logic
+# Inference exercises the torch-free ONNX pipeline + inherited mapping/thresholds
 # --------------------------------------------------------------------------- #
 def test_person_name_maps_to_person(fake_ort):
-    fake_ort.pipe.return_value = [_pred("PERSON_NAME", 0, 10, "John Smith")]
+    fake_ort.prime([("PERSON_NAME", 0, 10, 0.95)])
     rec = BardsEuPiiOnnxRecognizer()
     res = rec.analyze("John Smith went home", ["PERSON"])
     assert len(res) == 1 and res[0].entity_type == "PERSON"
+    assert (res[0].start, res[0].end) == (0, 10)
+
+
+def test_consecutive_subwords_merge_into_one_span(fake_ort):
+    # The model BIO-tags every sub-word; consecutive same-entity tokens merge.
+    fake_ort.prime([("PERSON_NAME", 0, 4, 0.99), ("PERSON_NAME", 5, 10, 0.97)])
+    rec = BardsEuPiiOnnxRecognizer()
+    res = rec.analyze("John Smith", ["PERSON"])
+    assert len(res) == 1
+    assert (res[0].start, res[0].end) == (0, 10)
 
 
 def test_labels_to_ignore_drops_prediction(fake_ort):
-    fake_ort.pipe.return_value = [_pred("EMAIL_ADDRESS", 0, 7, "a@b.com")]
+    fake_ort.prime([("EMAIL_ADDRESS", 0, 7, 0.95)])
     rec = BardsEuPiiOnnxRecognizer(labels_to_ignore=["EMAIL_ADDRESS"])
     assert rec.analyze("a@b.com", ["EMAIL_ADDRESS"]) == []
 
 
 def test_thresholds_by_entity_applied(fake_ort):
-    fake_ort.pipe.return_value = [_pred("PERSON_NAME", 0, 10, "John Smith", score=0.5)]
+    fake_ort.prime([("PERSON_NAME", 0, 10, 0.5)])
     rec = BardsEuPiiOnnxRecognizer(thresholds_by_entity={"PERSON": 0.8})
     assert rec.analyze("John Smith", ["PERSON"]) == []  # 0.5 < 0.8
 
@@ -219,9 +279,9 @@ def test_thresholds_by_language_applied(fake_ort):
         supported_language="de",
         thresholds_by_language={"de": {"PERSON": 0.9}},
     )
-    fake_ort.pipe.return_value = [_pred("PERSON_NAME", 0, 10, "Max Muller", score=0.6)]
+    fake_ort.prime([("PERSON_NAME", 0, 10, 0.6)])
     assert rec.analyze("Max Muller", ["PERSON"]) == []  # 0.6 < de PERSON 0.9
-    fake_ort.pipe.return_value = [_pred("PERSON_NAME", 0, 10, "Max Muller", score=0.95)]
+    fake_ort.prime([("PERSON_NAME", 0, 10, 0.95)])
     assert len(rec.analyze("Max Muller", ["PERSON"])) == 1
 
 
@@ -238,30 +298,23 @@ def test_loads_quantized_onnx_with_enable_all(fake_ort):
     assert s_args[0] == onnx_module.DEFAULT_EU_PII_MODEL
     assert "onnx/model_quantized.onnx" in s_kwargs["allow_patterns"]
 
-    fake_ort.ort_model_cls.from_pretrained.assert_called_once()
-    args, kwargs = fake_ort.ort_model_cls.from_pretrained.call_args
-    # The model is loaded from the local snapshot dir, not the repo id.
-    assert args[0] == fake_ort.model_dir
-    assert kwargs["subfolder"] == "onnx"
-    assert kwargs["file_name"] == "model_quantized.onnx"
-    assert kwargs["provider"] == "CPUExecutionProvider"
-    assert kwargs["session_options"].graph_optimization_level == "ORT_ENABLE_ALL"
-    # Config is loaded from the local dir's root (the onnx/ subfolder has no
-    # config.json) and passed explicitly, so Optimum never reads the subfolder.
+    # One InferenceSession built from the local quantized ONNX path with
+    # ORT_ENABLE_ALL and the CPU provider.
+    assert len(fake_ort.created["sessions"]) == 1
+    session = fake_ort.created["sessions"][0]
+    assert session.path == "/fake/snapshot/dir/onnx/model_quantized.onnx"
+    assert session.providers == ["CPUExecutionProvider"]
+    assert session.sess_options.graph_optimization_level == "ORT_ENABLE_ALL"
+    # config + tokenizer loaded from the local dir (default tokenizer == model)
     fake_ort.config_loader.assert_called_once_with(fake_ort.model_dir)
-    assert kwargs["config"] is fake_ort.config
-    # tokenizer also loaded from the local dir (default tokenizer == model)
     fake_ort.tokenizer_loader.assert_called_once_with(fake_ort.model_dir)
-    # pipeline built with the inherited aggregation strategy
-    _, pkwargs = fake_ort.pipeline_factory.call_args
-    assert pkwargs["aggregation_strategy"] == "first"
 
 
 def test_thread_counts_set_on_session_options(fake_ort):
     BardsEuPiiOnnxRecognizer(onnx_intra_op_num_threads=3, onnx_inter_op_num_threads=2)
-    _, kwargs = fake_ort.ort_model_cls.from_pretrained.call_args
-    assert kwargs["session_options"].intra_op_num_threads == 3
-    assert kwargs["session_options"].inter_op_num_threads == 2
+    opts = fake_ort.created["sessions"][0].sess_options
+    assert opts.intra_op_num_threads == 3
+    assert opts.inter_op_num_threads == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -301,39 +354,38 @@ def test_non_positive_env_ignored_with_warning(fake_ort, monkeypatch, caplog):
 # Missing-extra error
 # --------------------------------------------------------------------------- #
 def test_missing_extra_raises_actionable_error(monkeypatch):
-    onnx_module._ORT_MODEL_CACHE.clear()
-    # Force the optimum import inside the load path to fail regardless of what is
-    # installed, then assert the wrapped error points users at the extra.
-    monkeypatch.setitem(sys.modules, "optimum.onnxruntime", None)
+    onnx_module._ORT_SESSION_CACHE.clear()
+    # Force the onnxruntime import inside the load path to fail regardless of what
+    # is installed, then assert the wrapped error points users at the extra.
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
     with pytest.raises(ImportError, match=r"presidio-analyzer\[bards-onnx\]"):
         BardsEuPiiOnnxRecognizer(model_name="unique/model-for-error-test")
 
 
 # --------------------------------------------------------------------------- #
-# Shared ORT-model cache + per-instance isolation
+# Shared ORT-session cache + per-instance isolation
 # --------------------------------------------------------------------------- #
 def test_model_cached_across_languages(fake_ort):
     BardsEuPiiOnnxRecognizer(supported_language="en")
     BardsEuPiiOnnxRecognizer(supported_language="de")
-    # The heavy ORT model + tokenizer is loaded once and shared...
-    assert fake_ort.ort_model_cls.from_pretrained.call_count == 1
+    # The heavy ORT session + tokenizer is built once and shared...
+    assert len(fake_ort.created["sessions"]) == 1
     assert fake_ort.tokenizer_loader.call_count == 1
-    assert len(onnx_module._ORT_MODEL_CACHE) == 1
-    # ...but each recognizer gets its own pipeline built around it.
-    assert fake_ort.pipeline_factory.call_count == 2
+    assert len(onnx_module._ORT_SESSION_CACHE) == 1
 
 
 def test_labels_to_ignore_isolated_between_instances(fake_ort):
-    fake_ort.pipe.return_value = [_pred("EMAIL_ADDRESS", 0, 7, "a@b.com")]
     ignoring = BardsEuPiiOnnxRecognizer(
         supported_language="en", labels_to_ignore=["EMAIL_ADDRESS"]
     )
     keeping = BardsEuPiiOnnxRecognizer(supported_language="de")
-    # Same cached model (loaded once), but the ignore filter is per recognizer.
-    assert fake_ort.ort_model_cls.from_pretrained.call_count == 1
+    # Same cached session (built once), but the ignore filter is per recognizer.
+    assert len(fake_ort.created["sessions"]) == 1
     assert "EMAIL_ADDRESS" not in ignoring.supported_entities
     assert "EMAIL_ADDRESS" in keeping.supported_entities
+    fake_ort.prime([("EMAIL_ADDRESS", 0, 7, 0.95)])
     assert ignoring.analyze("a@b.com", ["EMAIL_ADDRESS"]) == []
+    fake_ort.prime([("EMAIL_ADDRESS", 0, 7, 0.95)])
     assert [r.entity_type for r in keeping.analyze("a@b.com", ["EMAIL_ADDRESS"])] == [
         "EMAIL_ADDRESS"
     ]
@@ -378,7 +430,6 @@ def test_yaml_loader_from_bards_hybrid_config(fake_ort):
     ),
 )
 def test_integration_real_onnx_model_detects_person_and_email():
-    pytest.importorskip("optimum", reason="optimum is not installed")
     pytest.importorskip("onnxruntime", reason="onnxruntime is not installed")
 
     rec = BardsEuPiiOnnxRecognizer(threshold=0.3)

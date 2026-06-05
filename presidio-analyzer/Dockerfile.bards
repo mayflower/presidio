@@ -3,9 +3,10 @@
 # Deterministic regex/checksum recognizers own structured identifiers and Bards
 # owns free-text PII (see conf/bards_hybrid_recognizers.yaml). By default the NER
 # backend is BardsEuPiiOnnxRecognizer, running the upstream quantized
-# onnx/model_quantized.onnx on CPU via Optimum ONNX Runtime. The model is baked
-# into the image's Hugging Face cache at build time, so the container is
-# self-contained and never downloads a model at runtime.
+# onnx/model_quantized.onnx on CPU with ONNX Runtime only — no torch, no Optimum
+# (so no multi-GB CUDA wheel). The model is baked into the image's Hugging Face
+# cache at build time, so the container is self-contained and never downloads a
+# model at runtime.
 #
 # PyTorch escape hatch — build the compatibility variant with:
 #   --build-arg BARDS_BACKEND=pytorch \
@@ -18,8 +19,9 @@ ARG ANALYZER_CONF_FILE=presidio_analyzer/conf/bards_hybrid_analyzer.yaml
 ARG RECOGNIZER_REGISTRY_CONF_FILE=presidio_analyzer/conf/bards_hybrid_recognizers.yaml
 ARG BARDS_MODEL=bardsai/eu-pii-anonimization-multilang
 # "onnx" (default) or "pytorch" — selects the extra installed and the recognizer
-# class whose model is baked into the image. The "onnx" path pulls torch only
-# transitively via Optimum; the "pytorch" path uses the transformers extra.
+# class whose model is baked into the image. The "onnx" path is torch-free
+# (onnxruntime + tokenizer); the "pytorch" path uses the transformers extra and
+# pulls torch.
 ARG BARDS_BACKEND=onnx
 
 ENV PIP_NO_CACHE_DIR=1
@@ -58,9 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ./pyproject.toml /app/
-# Install the server extra plus the backend extra: bards-onnx (Optimum + ONNX
-# Runtime) for the default onnx backend, or transformers for pytorch. torch is
-# not installed explicitly; for onnx it comes in transitively via Optimum only.
+# Install the server extra plus the backend extra: bards-onnx (ONNX Runtime +
+# transformers tokenizer, torch-free) for the default onnx backend, or
+# transformers (which pulls torch) for the pytorch backend.
 RUN pip install poetry==2.3.2 \
     && poetry install --no-root --only=main -E server \
        $([ "${BARDS_BACKEND}" = "pytorch" ] && echo "-E transformers" || echo "-E bards-onnx")
