@@ -168,12 +168,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         action="append",
-        choices=("bards", "gliner", "huggingface"),
+        choices=("bards", "bards_onnx", "gliner", "huggingface"),
         default=None,
         help=(
-            "NER backend(s) to evaluate; repeat to compare several. Defaults to "
-            "'bards'. 'gliner'/'huggingface' are optional and require their "
-            "extras/models. Multiple backends are combined via --ensemble."
+            "NER backend(s) to evaluate; repeat to compare several (e.g. "
+            "--backend bards --backend bards_onnx). Defaults to 'bards'. "
+            "'bards_onnx' (CPU ONNX Runtime), 'gliner' and 'huggingface' are "
+            "optional and require their extras/models. Multiple backends are "
+            "combined via --ensemble."
         ),
     )
     parser.add_argument(
@@ -586,9 +588,10 @@ def _format_sweep_summary(result: Dict[str, Any]) -> str:
 def _build_backend(backend: str, language: str, args: argparse.Namespace):
     """Build one NER backend recognizer, with actionable errors when optional.
 
-    ``bards`` is always available on this branch; ``gliner`` and ``huggingface``
-    are optional and raise ``SystemExit`` with installation guidance if their
-    dependency or model is missing.
+    ``bards`` is always available on this branch; ``bards_onnx`` (CPU ONNX
+    Runtime), ``gliner`` and ``huggingface`` are optional and raise
+    ``SystemExit`` with installation guidance if their dependency or model is
+    missing.
     """
     if backend == "bards":
         from presidio_analyzer.predefined_recognizers import BardsEuPiiRecognizer
@@ -600,6 +603,23 @@ def _build_backend(backend: str, language: str, args: argparse.Namespace):
         if args.mapping_profile:
             kwargs["mapping_profile"] = args.mapping_profile
         return BardsEuPiiRecognizer(**kwargs)
+
+    if backend == "bards_onnx":
+        try:
+            from presidio_analyzer.predefined_recognizers import (
+                BardsEuPiiOnnxRecognizer,
+            )
+
+            kwargs = {"supported_language": language, "threshold": args.threshold}
+            if args.mapping_profile:
+                kwargs["mapping_profile"] = args.mapping_profile
+            return BardsEuPiiOnnxRecognizer(**kwargs)
+        except ImportError as exc:
+            raise SystemExit(
+                "--backend bards_onnx requires the 'bards-onnx' extra "
+                "(pip install 'presidio-analyzer[bards-onnx]'). "
+                "Original error: " + str(exc)
+            ) from exc
 
     if backend == "gliner":
         try:
