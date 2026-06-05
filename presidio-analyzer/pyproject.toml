@@ -65,7 +65,10 @@ gliner = [
 bards-onnx = [
     "transformers (>=4.0.0,<6.0.0)",
     "huggingface_hub (>=0.20.0,<2.0.0)",
-    "optimum[onnxruntime] (>=1.17.0,<2.0.0)",
+    "optimum[onnxruntime] (>=2.0.0,<3.0.0)",
+    # Optimum >= 2 moved the ONNX Runtime integration (optimum.onnxruntime)
+    # into the separate optimum-onnx package; require it explicitly.
+    "optimum-onnx (>=0.1.0)",
     "onnxruntime (>=1.19, <1.24.1) ; python_version == '3.10'",
     "onnxruntime (>=1.19) ; python_version > '3.10'"
 ]

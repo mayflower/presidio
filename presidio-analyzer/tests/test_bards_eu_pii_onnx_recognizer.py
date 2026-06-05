@@ -240,7 +240,7 @@ def test_loads_quantized_onnx_with_enable_all(fake_ort):
 
     fake_ort.ort_model_cls.from_pretrained.assert_called_once()
     args, kwargs = fake_ort.ort_model_cls.from_pretrained.call_args
-    # The model is loaded from the local dir, not the repo id.
+    # The model is loaded from the local snapshot dir, not the repo id.
     assert args[0] == fake_ort.model_dir
     assert kwargs["subfolder"] == "onnx"
     assert kwargs["file_name"] == "model_quantized.onnx"
