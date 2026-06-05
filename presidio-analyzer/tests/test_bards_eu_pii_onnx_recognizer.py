@@ -79,6 +79,13 @@ def fake_ort(monkeypatch):
     monkeypatch.setitem(sys.modules, "optimum", fake_optimum)
     monkeypatch.setitem(sys.modules, "optimum.onnxruntime", fake_optimum_ort)
 
+    # fake huggingface_hub.snapshot_download -> a local dir (no network)
+    import huggingface_hub
+
+    model_dir = "/fake/snapshot/dir"
+    snapshot_loader = MagicMock(return_value=model_dir)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_loader)
+
     # patch transformers AutoConfig + AutoTokenizer.from_pretrained + pipeline
     config = MagicMock(name="config")
     config_loader = MagicMock(return_value=config)
@@ -95,6 +102,8 @@ def fake_ort(monkeypatch):
         pipeline_factory=pipeline_factory,
         ort_model_cls=ort_model_cls,
         ort_model=model,
+        snapshot_loader=snapshot_loader,
+        model_dir=model_dir,
         config_loader=config_loader,
         config=config,
         tokenizer_loader=tokenizer_loader,
@@ -221,16 +230,28 @@ def test_thresholds_by_language_applied(fake_ort):
 # --------------------------------------------------------------------------- #
 def test_loads_quantized_onnx_with_enable_all(fake_ort):
     BardsEuPiiOnnxRecognizer()
+    # The repo is resolved to a local snapshot dir (so the load never calls the
+    # HF repo-tree API and a baked, offline image loads from cache); only the
+    # config, tokenizer and the single quantized ONNX file are fetched.
+    fake_ort.snapshot_loader.assert_called_once()
+    s_args, s_kwargs = fake_ort.snapshot_loader.call_args
+    assert s_args[0] == onnx_module.DEFAULT_EU_PII_MODEL
+    assert "onnx/model_quantized.onnx" in s_kwargs["allow_patterns"]
+
     fake_ort.ort_model_cls.from_pretrained.assert_called_once()
-    _, kwargs = fake_ort.ort_model_cls.from_pretrained.call_args
+    args, kwargs = fake_ort.ort_model_cls.from_pretrained.call_args
+    # The model is loaded from the local dir, not the repo id.
+    assert args[0] == fake_ort.model_dir
     assert kwargs["subfolder"] == "onnx"
     assert kwargs["file_name"] == "model_quantized.onnx"
     assert kwargs["provider"] == "CPUExecutionProvider"
     assert kwargs["session_options"].graph_optimization_level == "ORT_ENABLE_ALL"
-    # Config is loaded from the repo root (the onnx/ subfolder has no config.json)
-    # and passed explicitly, so Optimum does not try to read it from the subfolder.
-    fake_ort.config_loader.assert_called_once_with(onnx_module.DEFAULT_EU_PII_MODEL)
+    # Config is loaded from the local dir's root (the onnx/ subfolder has no
+    # config.json) and passed explicitly, so Optimum never reads the subfolder.
+    fake_ort.config_loader.assert_called_once_with(fake_ort.model_dir)
     assert kwargs["config"] is fake_ort.config
+    # tokenizer also loaded from the local dir (default tokenizer == model)
+    fake_ort.tokenizer_loader.assert_called_once_with(fake_ort.model_dir)
     # pipeline built with the inherited aggregation strategy
     _, pkwargs = fake_ort.pipeline_factory.call_args
     assert pkwargs["aggregation_strategy"] == "first"
