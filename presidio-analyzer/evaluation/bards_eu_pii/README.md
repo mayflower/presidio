@@ -16,6 +16,7 @@ micro-averaged.
 | File | Purpose |
 |---|---|
 | `evaluate_bards_eu_pii.py` | CLI: run the recognizer over a dataset and emit metrics JSON. |
+| `benchmark_bards_cpu.py` | CLI: measure CPU throughput/latency (PyTorch vs ONNX). Speed only, not quality. |
 | `metrics.py` | Pure-Python span matching + P/R/F1/F-beta. Offline, unit-tested. |
 | `sweep.py` | Threshold-sweep recommendation logic. Offline, unit-tested. |
 | `preprocess.py` | Experimental, eval-only text normalization (OCR/spaced email). Offline, unit-tested. |
@@ -24,7 +25,7 @@ micro-averaged.
 | `label_maps.py` | Maps recognizer entity types onto evaluation buckets. |
 | `sample_data.jsonl` | Tiny synthetic dataset (de/en/fr/it) for a fast smoke run. |
 | `robustness_sample_data.jsonl` | Synthetic noisy cases (OCR, spacing, Straße/Strasse, code-switching, usernames). |
-| `tests/` | Offline tests for `metrics.py`, `sweep.py`, `preprocess.py`, `ensemble.py` (no model download). |
+| `tests/` | Offline tests for `metrics.py`, `sweep.py`, `preprocess.py`, `ensemble.py`, and the benchmark/backend-routing CLIs (no model download). |
 
 ## Data format
 
@@ -130,6 +131,77 @@ python .../evaluate_bards_eu_pii.py --input data.jsonl \
   synthetic `RecognizerResult` objects (no model). `--threshold-sweep` is not
   combined with multi-backend comparison — sweep the default Bards backend, then
   compare at the chosen threshold.
+
+## Benchmarking CPU throughput (PyTorch vs ONNX)
+
+`evaluate_bards_eu_pii.py` measures **quality**; `benchmark_bards_cpu.py`
+measures **speed**. Use it to measure the ONNX CPU speed-up on your own hardware:
+the same model runs through either the PyTorch checkpoint — the
+[`BardsEuPiiRecognizer`](../../presidio_analyzer/predefined_recognizers/ner/bards_eu_pii_recognizer.py)
+PyTorch path — or the upstream quantized ONNX file `onnx/model_quantized.onnx` —
+the CPU-optimized
+[`BardsEuPiiOnnxRecognizer`](../../presidio_analyzer/predefined_recognizers/ner/bards_eu_pii_onnx_recognizer.py)
+ONNX Runtime path (needs the `bards-onnx` extra). The production Bards hybrid
+container uses the ONNX path by default; see the
+[deployment guide](../../../docs/samples/python/bards_eu_pii.md#cpu-optimized-inference-onnx-runtime).
+Presidio and the model are imported lazily, so the script — and its offline
+tests — stay light.
+
+Input is either a harness JSONL file (the `text`/`language` fields are reused) or
+a plain text file (one document per non-blank line, tagged with the first
+`--languages` entry).
+
+```bash
+# 1. Compare PyTorch vs ONNX on the sample data (warm up once, time 20 passes)
+pip install 'presidio-analyzer[transformers]'   # PyTorch backend
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --languages de,en,fr,it --backend pytorch --warmup 1 --repeat 20 \
+  --output /tmp/bench_pytorch.json
+
+pip install 'presidio-analyzer[bards-onnx]'      # ONNX Runtime backend
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --languages de,en,fr,it --backend onnx --warmup 1 --repeat 20 \
+  --output /tmp/bench_onnx.json
+
+# 2. Hybrid ONNX benchmark (NER + deterministic recognizers, as in production)
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --languages de,en,fr,it --backend onnx --mode hybrid --warmup 1 --repeat 20 \
+  --output /tmp/bench_onnx_hybrid.json
+
+# 3. Pin ONNX Runtime thread counts for a CPU container, then benchmark
+ORT_INTRA_OP_THREADS=4 ORT_INTER_OP_THREADS=1 \
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --backend onnx --warmup 1 --repeat 50 --output /tmp/bench_onnx_4threads.json
+```
+
+- `--backend {pytorch,onnx}` — which recognizer to time (default `onnx`).
+- `--mode {standard,hybrid}` — `standard` times the NER backend only; `hybrid`
+  also runs the deterministic recognizers (email, phone, IP, credit card, URL,
+  IBAN) per document, matching the production hybrid pipeline.
+- `--languages de,en,fr,it` — one recognizer is built per language; plain-text
+  inputs use the first language.
+- `--warmup N` — untimed passes to load the model and let ONNX Runtime settle
+  before timing (default 1).
+- `--repeat N` — timed passes over the whole input (default 1). More passes give
+  stabler percentiles; `p99_ms` is only reported once there are ≥ 100 samples.
+- `--output results.json` — write the report; a one-line summary always prints.
+
+The report records `docs_per_second`, `chars_per_second`, `total_seconds` and
+`p50_ms`/`p95_ms`/`p99_ms` latencies (timed with `time.perf_counter`). For the
+ONNX backend an `onnx` block echoes the provider, ONNX file and the resolved
+`intra_op`/`inter_op` thread counts plus the `ORT_*` env vars, so a benchmark JSON
+is self-describing. If `psutil` is installed an `rss_mb` field is added (it is
+**not** a required dependency — the script omits the field when it is absent).
+
+`ORT_INTRA_OP_THREADS` / `ORT_INTER_OP_THREADS` (or the
+`onnx_intra_op_num_threads` / `onnx_inter_op_num_threads` constructor kwargs) tune
+ONNX Runtime's parallelism. In a CPU container, pinning intra-op threads to the
+container's CPU limit and leaving `WORKERS=1` is usually fastest; benchmark a few
+values to find the best fit for your hardware.
 
 ## Threshold sweep: data-backed threshold profiles
 
