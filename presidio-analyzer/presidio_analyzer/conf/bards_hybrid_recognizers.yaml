@@ -1,6 +1,13 @@
 # Recognizer registry for the "Bards + regex" (hybrid) image — the benchmarked
 # optimal setup: deterministic regex/checksum recognizers own the structured
-# identifiers, and BardsEuPiiRecognizer owns the free-text / contextual PII.
+# identifiers, and Bards owns the free-text / contextual PII.
+#
+# This is the CPU-optimized default: the NER backend is BardsEuPiiOnnxRecognizer,
+# which runs the upstream quantized onnx/model_quantized.onnx via Optimum ONNX
+# Runtime (no PyTorch model load). To use the PyTorch backend instead, point the
+# registry at bards_hybrid_recognizers_pytorch.yaml (e.g. set
+# RECOGNIZER_REGISTRY_CONF_FILE, or the Dockerfile.bards BARDS_BACKEND=pytorch
+# build arg).
 #
 # Only the recognizers listed here are loaded (no other predefined recognizers),
 # keeping the registry focused on the hybrid layer.
@@ -12,7 +19,7 @@ supported_languages:
 global_regex_flags: 26
 
 recognizers:
-  # spaCy NER is disabled — BardsEuPiiRecognizer owns PERSON / LOCATION / etc.
+  # spaCy NER is disabled — Bards owns PERSON / LOCATION / etc.
   # (spaCy is still loaded for tokenization via bards_hybrid.yaml).
   - name: SpacyRecognizer
     type: predefined
@@ -32,12 +39,15 @@ recognizers:
   - name: UrlRecognizer
     type: predefined
 
-  # --- Bards EU-PII (hybrid) ---
-  # Owns free-text NER; the structured labels below are dropped so the
-  # deterministic recognizers above own e-mail / phone / IP / card / URL.
-  - name: BardsEuPiiRecognizer
+  # --- Bards EU-PII (hybrid), CPU / quantized ONNX Runtime ---
+  # Owns free-text NER; runs onnx/model_quantized.onnx on CPU. The structured
+  # labels below are dropped so the deterministic recognizers above own e-mail /
+  # phone / IP / card / URL. ORT threading can be tuned with the
+  # ORT_INTRA_OP_THREADS / ORT_INTER_OP_THREADS env vars (or onnx_provider here).
+  - name: BardsEuPiiOnnxRecognizer
     type: predefined
     threshold: 0.4
+    onnx_provider: CPUExecutionProvider
     labels_to_ignore:
       - EMAIL_ADDRESS
       - PHONE_NUMBER

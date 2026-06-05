@@ -18,14 +18,24 @@ services:
       dockerfile: Dockerfile.bards
     environment:
       - PORT=5001
+      # Override these from the host env / an .env file. Defaults are CPU-safe:
+      # one worker, and ORT_INTRA_OP_THREADS left unset so ONNX Runtime picks a
+      # thread count itself. For best CPU throughput set ORT_INTRA_OP_THREADS to
+      # the container's physical cores and benchmark; keep
+      # WORKERS * ORT_INTRA_OP_THREADS at or below those cores so workers and ORT
+      # threads don't oversubscribe the CPU. TOKENIZERS_PARALLELISM=false avoids
+      # the tokenizers fork/parallelism warning and contention.
+      - WORKERS=${WORKERS:-1}
+      - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-}
+      - TOKENIZERS_PARALLELISM=false
     ports:
       - "5002:5001"
-    # The model ships as safetensors and is mmap-loaded, so the four language
-    # instances (en/de/fr/it) share the weight pages — ~1.1 GB of model RAM
-    # combined, not per language. ~2 GB working set total; this leaves headroom.
+    # CPU / quantized ONNX default: the four language instances (en/de/fr/it)
+    # share one ONNX Runtime session, so the quantized model is loaded once.
+    # ~1–1.5 GB working set; the limit below leaves headroom.
     deploy:
       resources:
         limits:
-          memory: 3g
+          memory: 2g
         reservations:
-          memory: 1500m
+          memory: 1g
