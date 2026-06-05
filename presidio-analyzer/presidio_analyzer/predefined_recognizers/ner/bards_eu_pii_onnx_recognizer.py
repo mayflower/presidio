@@ -226,9 +226,14 @@ class BardsEuPiiOnnxRecognizer(BardsEuPiiRecognizer):
         # tokenizer at the root, so the config is loaded from the root and passed
         # explicitly (otherwise Optimum looks for a missing ``config.json`` inside
         # the subfolder and fails with "Unrecognized model ... model_type").
+        # Load from the local snapshot dir: the config/tokenizer at its root and
+        # the ONNX weights in the ``onnx/`` subfolder. The config is passed
+        # explicitly (the subfolder has no ``config.json``). Optimum >= 2 is
+        # required (pinned in the ``bards-onnx`` extra) so the local-dir
+        # ``subfolder`` handling here is well-defined; Optimum 1.x ignored
+        # ``subfolder`` for a local dir and could not find the file.
         model_dir = self._resolve_model_dir()
         config = AutoConfig.from_pretrained(model_dir)
-
         model = ORTModelForTokenClassification.from_pretrained(
             model_dir,
             subfolder=self._onnx_model_subfolder,
