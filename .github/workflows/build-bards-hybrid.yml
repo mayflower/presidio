@@ -2,7 +2,8 @@ name: Build Bards-hybrid images
 
 # Builds and pushes the "Bards + regex" (hybrid) Presidio stack to GHCR as
 # multi-arch (linux/amd64 + linux/arm64) images:
-#   - presidio-analyzer-bards  (Dockerfile.bards, Bards model baked in)
+#   - presidio-analyzer-bards  (Dockerfile.bards, CPU-optimized ONNX Bards model
+#                               baked in — BARDS_BACKEND=onnx)
 #   - presidio-anonymizer      (stock image, for a complete pair)
 # Each platform is built on a native runner (no QEMU emulation) and the
 # per-platform images are merged into multi-arch manifests. Auth uses the
@@ -33,24 +34,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The Bards analyzer is built on the CPU-optimized ONNX backend
+          # (quantized onnx/model_quantized.onnx). Build the PyTorch variant
+          # locally instead — see Dockerfile.bards's header.
           - image: presidio-analyzer-bards
             context: ./presidio-analyzer
             dockerfile: Dockerfile.bards
+            build_args: BARDS_BACKEND=onnx
             platform: linux/amd64
             runner: ubuntu-latest
           - image: presidio-analyzer-bards
             context: ./presidio-analyzer
             dockerfile: Dockerfile.bards
+            build_args: BARDS_BACKEND=onnx
             platform: linux/arm64
             runner: ubuntu-24.04-arm
           - image: presidio-anonymizer
             context: ./presidio-anonymizer
             dockerfile: Dockerfile
+            build_args: ""
             platform: linux/amd64
             runner: ubuntu-latest
           - image: presidio-anonymizer
             context: ./presidio-anonymizer
             dockerfile: Dockerfile
+            build_args: ""
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
@@ -84,10 +92,17 @@ jobs:
           set -eu
           IMAGE="${{ steps.meta.outputs.image }}"
           PT="${{ steps.meta.outputs.platform_tag }}"
+          # Per-image build args (e.g. BARDS_BACKEND=onnx); empty for the
+          # anonymizer. A bash array expands to nothing when empty.
+          BUILD_ARGS=()
+          if [ -n "${{ matrix.build_args }}" ]; then
+            BUILD_ARGS=(--build-arg "${{ matrix.build_args }}")
+          fi
           docker buildx build \
             --platform "${{ matrix.platform }}" \
             --provenance=false \
             --push \
+            "${BUILD_ARGS[@]}" \
             --file "${{ matrix.context }}/${{ matrix.dockerfile }}" \
             --tag "${IMAGE}:${{ steps.meta.outputs.sha_tag }}-${PT}" \
             --cache-from "type=registry,ref=${IMAGE}:buildcache-${PT}" \
