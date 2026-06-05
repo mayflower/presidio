@@ -22,11 +22,18 @@ Presidio entities.
 
 ## Installation
 
-The model runs through the `transformers` extra (which pulls in `transformers`,
-`accelerate`/`torch` and `huggingface_hub`):
+There are two interchangeable backends — pick the extra for the one you want
+(see [CPU-optimized inference (ONNX Runtime)](#cpu-optimized-inference-onnx-runtime)
+for the trade-off):
 
 ```bash
+# PyTorch path — BardsEuPiiRecognizer (best on GPU; reference numerics).
+# Pulls in transformers, accelerate/torch and huggingface_hub.
 pip install 'presidio-analyzer[transformers]'
+
+# CPU-optimized ONNX Runtime path — BardsEuPiiOnnxRecognizer.
+# Pulls in Optimum + ONNX Runtime (torch is not required).
+pip install 'presidio-analyzer[bards-onnx]'
 ```
 
 ## Quick start
@@ -59,12 +66,13 @@ The safest, highest-quality setup is **hybrid**: let deterministic recognizers
 own the structured identifiers and let the model own the contextual, free-form
 and sensitive PII.
 
-- **Use `BardsEuPiiRecognizer.hybrid()`.** The model is strong on free-form,
-  contextual PII (names, locations, roles, the GDPR special categories) but, like
-  any NER model, it is noisier on rigid-format identifiers than a dedicated
-  validator. `hybrid()` drops the structured model labels (e-mail, phone, IP,
-  credit card, URL) *before* they are emitted, so those entities come only from
-  precise recognizers and the model is scoped to what it does best.
+- **Use `BardsEuPiiRecognizer.hybrid()`** (or `BardsEuPiiOnnxRecognizer.hybrid()`
+  for the CPU-optimized ONNX backend — same behavior). The model is strong on
+  free-form, contextual PII (names, locations, roles, the GDPR special categories)
+  but, like any NER model, it is noisier on rigid-format identifiers than a
+  dedicated validator. `hybrid()` drops the structured model labels (e-mail,
+  phone, IP, credit card, URL) *before* they are emitted, so those entities come
+  only from precise recognizers and the model is scoped to what it does best.
 - **Keep the deterministic recognizers enabled.** A default `AnalyzerEngine`
   already registers Presidio's regex/checksum recognizers (`EmailRecognizer`,
   `PhoneRecognizer`, `CreditCardRecognizer` with a Luhn check, `IbanRecognizer`,
@@ -77,6 +85,105 @@ and sensitive PII.
   not registered a Bards instance for.
 
 A runnable hybrid example is in [Examples](#examples).
+
+## CPU-optimized inference (ONNX Runtime)
+
+The recognizer ships in two interchangeable backends — same model, same labels,
+same mapping / threshold / `hybrid()` behavior; only the inference runtime
+differs:
+
+- **`BardsEuPiiRecognizer` — the PyTorch path.** Runs the `safetensors`
+  checkpoint through `transformers`. Best when you run on GPU, or want the
+  reference PyTorch numerics. Needs the `transformers` extra.
+- **`BardsEuPiiOnnxRecognizer` — the CPU-optimized ONNX Runtime path.** Loads the
+  model card's upstream **quantized ONNX file**, `onnx/model_quantized.onnx`,
+  through Optimum ONNX Runtime and runs it on CPU. Built for CPU-only
+  deployments. Needs the `bards-onnx` extra; torch is not required to construct
+  it.
+
+`BardsEuPiiOnnxRecognizer` subclasses `BardsEuPiiRecognizer`, so everything else
+in this guide — `hybrid()`, mapping profiles, per-entity / per-language
+thresholds, `labels_to_ignore`, the entity mapping — applies unchanged. The
+production recommendation is the same on either backend: **hybrid mode**,
+**deterministic recognizers for the structured identifiers** (e-mail, phone,
+IBAN, credit card, IP, URL), and **Bards/ONNX for the free-form contextual PII**.
+
+```python
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_analyzer.predefined_recognizers import BardsEuPiiOnnxRecognizer
+
+nlp_engine = NlpEngineProvider(nlp_configuration={
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+}).create_engine()
+
+analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+# Identical to the PyTorch hybrid setup, but on the quantized ONNX model.
+analyzer.registry.add_recognizer(BardsEuPiiOnnxRecognizer.hybrid())
+analyzer.registry.remove_recognizer("SpacyRecognizer")
+
+text = "Contact John Smith at john.smith@example.com or +49 30 12345678."
+results = analyzer.analyze(text=text, language="en")
+```
+
+### CPU deployment tuning
+
+ONNX Runtime parallelism is controlled by environment variables (or the
+`onnx_intra_op_num_threads` / `onnx_inter_op_num_threads` constructor kwargs).
+For a CPU container:
+
+- **Start with `WORKERS=1`.** One process loads the ONNX session once; the
+  per-language recognizer instances share it, so extra workers mostly duplicate
+  memory and threads.
+- **Set `TOKENIZERS_PARALLELISM=false`** to silence the Hugging Face tokenizers
+  fork/parallelism warning and avoid thread contention under a gunicorn server.
+- **Set `ORT_INTRA_OP_THREADS` to the number of physical cores allocated to the
+  container, then benchmark.** Leave `ORT_INTER_OP_THREADS=1` unless a benchmark
+  says otherwise. Left unset, ONNX Runtime picks its own default.
+- **Don't oversubscribe.** Total CPU pressure is roughly
+  `WORKERS × ORT_INTRA_OP_THREADS`; keep that at or below the cores the container
+  is given. Many workers each spawning many ORT threads contend and run *slower*,
+  not faster.
+
+### PyTorch fallback
+
+Prefer PyTorch when you run on GPU or want the reference checkpoint:
+
+- **Python:** use `BardsEuPiiRecognizer` (or `.hybrid()`) in place of the ONNX
+  class — the constructor arguments are identical.
+- **Container / YAML:** the default Bards hybrid image runs the ONNX backend;
+  build the PyTorch variant with the `bards_hybrid_recognizers_pytorch.yaml`
+  registry config — see
+  [Deploy as a container](#deploy-as-a-container-bards--regex).
+
+### Benchmarking PyTorch vs ONNX on your hardware
+
+CPU throughput depends on the model version, hardware and thread settings, so
+**measure both backends** rather than assuming a fixed speed-up. The evaluation
+harness ships a throughput/latency benchmark,
+[`benchmark_bards_cpu.py`](https://github.com/microsoft/presidio/blob/main/presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py):
+
+```bash
+# PyTorch Bards hybrid
+pip install 'presidio-analyzer[transformers]'
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --languages de,en,fr,it --backend pytorch --mode hybrid \
+  --warmup 1 --repeat 20 --output bench_pytorch_hybrid.json
+
+# ONNX Bards hybrid (pin ORT threads to the container's physical cores)
+pip install 'presidio-analyzer[bards-onnx]'
+ORT_INTRA_OP_THREADS=4 ORT_INTER_OP_THREADS=1 \
+python presidio-analyzer/evaluation/bards_eu_pii/benchmark_bards_cpu.py \
+  --input presidio-analyzer/evaluation/bards_eu_pii/sample_data.jsonl \
+  --languages de,en,fr,it --backend onnx --mode hybrid \
+  --warmup 1 --repeat 20 --output bench_onnx_hybrid.json
+```
+
+Compare `docs_per_second` and `p95_ms` between the two reports. The harness
+[README](https://github.com/microsoft/presidio/blob/main/presidio-analyzer/evaluation/bards_eu_pii/README.md)
+documents every option.
 
 ## Examples
 
@@ -553,14 +660,23 @@ The repo ships a ready-to-run **hybrid** analyzer image — deterministic regex
 recognizers own structured identifiers, Bards owns free-text PII — plus the stock
 anonymizer:
 
-- `presidio-analyzer/Dockerfile.bards` — the analyzer image. The Bards model is
-  **baked in** at build time (`HF_HUB_OFFLINE=1`), so the container never
-  downloads a model at runtime.
-- `presidio-analyzer/presidio_analyzer/conf/bards_hybrid*.yaml` — the three
-  configs that wire it up: a small per-language spaCy NLP engine
-  (`bards_hybrid.yaml`), the language set (`bards_hybrid_analyzer.yaml`), and the
-  hybrid recognizer registry (`bards_hybrid_recognizers.yaml`, which sets
-  `labels_to_ignore` and disables the spaCy NER recognizer).
+- `presidio-analyzer/Dockerfile.bards` — the analyzer image. It defaults to the
+  **CPU-optimized ONNX backend** (`BardsEuPiiOnnxRecognizer`, the quantized
+  `onnx/model_quantized.onnx`). The model is **baked in** at build time and
+  served offline (`HF_HUB_OFFLINE=1`), so the container never downloads a model
+  at runtime. The image presets the CPU defaults from
+  [CPU deployment tuning](#cpu-deployment-tuning): `WORKERS=1`,
+  `TOKENIZERS_PARALLELISM=false`, and `ORT_INTRA_OP_THREADS` left unset for you
+  to pin to the container's cores. Build the **PyTorch variant** with
+  `--build-arg BARDS_BACKEND=pytorch` and
+  `--build-arg RECOGNIZER_REGISTRY_CONF_FILE=presidio_analyzer/conf/bards_hybrid_recognizers_pytorch.yaml`.
+- `presidio-analyzer/presidio_analyzer/conf/bards_hybrid*.yaml` — the configs
+  that wire it up: a small per-language spaCy NLP engine (`bards_hybrid.yaml`),
+  the language set (`bards_hybrid_analyzer.yaml`), and the hybrid recognizer
+  registry. `bards_hybrid_recognizers.yaml` (default) selects
+  `BardsEuPiiOnnxRecognizer`; `bards_hybrid_recognizers_pytorch.yaml` selects the
+  PyTorch `BardsEuPiiRecognizer`. Both set `labels_to_ignore` and disable the
+  spaCy NER recognizer.
 - `docker-compose-bards.yml` — the analyzer + anonymizer pair.
 - `.github/workflows/build-bards-hybrid.yml` — builds and pushes both images to
   GHCR (`ghcr.io/<owner>/presidio-analyzer-bards`, `…/presidio-anonymizer`) on
@@ -577,11 +693,13 @@ docker compose -f docker-compose-bards.yml build
 ```
 
 The image ships with **en, de, fr, it**. Presidio registers a Bards instance per
-language, but the model ships as `safetensors` and is mmap-loaded, so all
-instances **share the same weight pages** — the four languages cost about
-**1.1 GB of model RAM combined** (measured), not 4× the model. Budget roughly
-**2 GB** for the analyzer; trim the language set in the three `bards_hybrid*.yaml`
-configs (and rebuild) only if you need to shave the remaining overhead.
+language, but they **share one in-process model** — a single ONNX Runtime session
+on the default ONNX backend, or mmap-shared `safetensors` weight pages on the
+PyTorch variant — so the four languages do not cost 4× the model. On the PyTorch
+variant the four languages measured about **1.1 GB of model RAM combined**.
+Budget roughly **2 GB** for the analyzer (the compose file sets a 2 GB limit);
+trim the language set in the `bards_hybrid*.yaml` configs (and rebuild) only if
+you need to shave the remaining overhead.
 
 ## Limitations
 
@@ -606,6 +724,9 @@ configs (and rebuild) only if you need to shave the remaining overhead.
   social `@handles`). To collect them as a `USERNAME` entity, add
   `ACCOUNT_IDENTIFIER → USERNAME` to your `label_mapping` — though name-shaped
   handles still surface as `PERSON`, which the model cannot disambiguate.
-- **Production / CPU.** The model card ships quantized ONNX weights
-  (`onnx/model_quantized.onnx`) for faster CPU inference; `BardsEuPiiRecognizer`
-  uses the PyTorch checkpoint, so an ONNX path would require a custom recognizer.
+- **Production / CPU.** For CPU-only deployments use `BardsEuPiiOnnxRecognizer`,
+  which runs the model card's quantized ONNX weights (`onnx/model_quantized.onnx`)
+  through ONNX Runtime; `BardsEuPiiRecognizer` runs the PyTorch checkpoint and is
+  the better fit on GPU. The two are drop-in interchangeable — see
+  [CPU-optimized inference (ONNX Runtime)](#cpu-optimized-inference-onnx-runtime)
+  for the backend choice and CPU deployment tuning.
