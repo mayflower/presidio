@@ -32,7 +32,8 @@ for the trade-off):
 pip install 'presidio-analyzer[transformers]'
 
 # CPU-optimized ONNX Runtime path — BardsEuPiiOnnxRecognizer.
-# Pulls in Optimum + ONNX Runtime (torch is not required).
+# Torch-free: pulls in ONNX Runtime + the transformers tokenizer only (no torch,
+# no Optimum, no CUDA), so the install/image stays small on CPU-only hosts.
 pip install 'presidio-analyzer[bards-onnx]'
 ```
 
@@ -97,9 +98,10 @@ differs:
   reference PyTorch numerics. Needs the `transformers` extra.
 - **`BardsEuPiiOnnxRecognizer` — the CPU-optimized ONNX Runtime path.** Loads the
   model card's upstream **quantized ONNX file**, `onnx/model_quantized.onnx`,
-  through Optimum ONNX Runtime and runs it on CPU. Built for CPU-only
-  deployments. Needs the `bards-onnx` extra; torch is not required to construct
-  it.
+  into an `onnxruntime.InferenceSession` and runs it on CPU. **Torch-free** —
+  inference is ONNX Runtime + the model's fast tokenizer + a small numpy
+  aggregation step (no torch, no Optimum, no CUDA), so the image is a few GB
+  smaller. Needs the `bards-onnx` extra. Built for CPU-only deployments.
 
 `BardsEuPiiOnnxRecognizer` subclasses `BardsEuPiiRecognizer`, so everything else
 in this guide — `hybrid()`, mapping profiles, per-entity / per-language
