@@ -547,6 +547,40 @@ In this run Bards led every NER bucket with high precision (PERSON P=0.80,
 LOCATION P=0.85), which matters when you anonymize by redaction — but treat it as
 a starting hypothesis to confirm or refute on your own data, not a guarantee.
 
+## Deploy as a container (Bards + regex)
+
+The repo ships a ready-to-run **hybrid** analyzer image — deterministic regex
+recognizers own structured identifiers, Bards owns free-text PII — plus the stock
+anonymizer:
+
+- `presidio-analyzer/Dockerfile.bards` — the analyzer image. The Bards model is
+  **baked in** at build time (`HF_HUB_OFFLINE=1`), so the container never
+  downloads a model at runtime.
+- `presidio-analyzer/presidio_analyzer/conf/bards_hybrid*.yaml` — the three
+  configs that wire it up: a small per-language spaCy NLP engine
+  (`bards_hybrid.yaml`), the language set (`bards_hybrid_analyzer.yaml`), and the
+  hybrid recognizer registry (`bards_hybrid_recognizers.yaml`, which sets
+  `labels_to_ignore` and disables the spaCy NER recognizer).
+- `docker-compose-bards.yml` — the analyzer + anonymizer pair.
+- `.github/workflows/build-bards-hybrid.yml` — builds and pushes both images to
+  GHCR (`ghcr.io/<owner>/presidio-analyzer-bards`, `…/presidio-anonymizer`) on
+  pushes to the feature branch, `bards-v*` tags, or manual dispatch.
+
+Run the published images, or build locally:
+
+```bash
+# pull + run the pair (analyzer on :5002, anonymizer on :5001)
+docker compose -f docker-compose-bards.yml up -d
+
+# or build locally
+docker compose -f docker-compose-bards.yml build
+```
+
+The image ships with **en, de, fr, it**. Because Presidio registers a recognizer
+per language, the analyzer loads **one Bards model per registered language** at
+startup — plan for ~6–8 GB RAM with four languages, and trim the language set in
+the three `bards_hybrid*.yaml` configs (and rebuild) to reduce the footprint.
+
 ## Limitations
 
 - **Model quality varies by language and domain.** It is one multilingual model;

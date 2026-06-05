@@ -1,0 +1,9 @@
+# Analyzer-engine config for the "Bards + regex" (hybrid) image.
+# Languages must match bards_hybrid.yaml (NLP models) and
+# bards_hybrid_recognizers.yaml (recognizer registry).
+supported_languages:
+  - en
+  - de
+  - fr
+  - it
+default_score_threshold: 0

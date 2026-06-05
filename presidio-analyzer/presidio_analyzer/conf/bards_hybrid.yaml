@@ -1,0 +1,28 @@
+# NLP engine for the "Bards + regex" (hybrid) analyzer image.
+#
+# spaCy is used here only for tokenization / the analyzer plumbing: the actual
+# free-text PII (PERSON, LOCATION, ...) comes from BardsEuPiiRecognizer, and the
+# auto-added SpacyRecognizer is disabled in bards_hybrid_recognizers.yaml. Small
+# per-language models keep the image lean; add or remove languages here (and in
+# bards_hybrid_analyzer.yaml / bards_hybrid_recognizers.yaml) to change coverage.
+nlp_engine_name: spacy
+models:
+  - lang_code: en
+    model_name: en_core_web_sm
+  - lang_code: de
+    model_name: de_core_news_sm
+  - lang_code: fr
+    model_name: fr_core_news_sm
+  - lang_code: it
+    model_name: it_core_news_sm
+
+ner_model_configuration:
+  model_to_presidio_entity_mapping:
+    PER: PERSON
+    PERSON: PERSON
+    LOC: LOCATION
+    GPE: LOCATION
+    ORG: ORGANIZATION
+  low_confidence_score_multiplier: 0.4
+  labels_to_ignore:
+    - O
