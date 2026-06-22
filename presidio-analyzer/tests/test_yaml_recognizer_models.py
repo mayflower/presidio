@@ -757,6 +757,111 @@ def test_gliner_recognizer_config_entity_mapping_and_supported_entities_mutually
         )
 
 
+def test_gliner2_recognizer_config_model_name():
+    """Test that GLiNER2Recognizer config fields survive validation."""
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+        RecognizerRegistryConfig,
+    )
+
+    registry_config = {
+        "recognizers": [
+            {
+                "name": "GLiNER2Recognizer",
+                "type": "predefined",
+                "supported_language": "en",
+                "model_name": "fastino/gliner2-privacy-filter-PII-multi",
+                "threshold": 0.5,
+                "map_location": "cpu",
+                "entity_mapping": {"email": "EMAIL_ADDRESS"},
+            }
+        ]
+    }
+
+    config = RecognizerRegistryConfig(**registry_config)
+    recognizer = config.recognizers[0]
+
+    assert isinstance(recognizer, GLiNER2RecognizerConfig)
+    assert recognizer.model_name == "fastino/gliner2-privacy-filter-PII-multi"
+    assert recognizer.threshold == 0.5
+    assert recognizer.map_location == "cpu"
+    assert recognizer.entity_mapping == {"email": "EMAIL_ADDRESS"}
+
+
+def test_gliner2_recognizer_config_model_dump_excludes_none():
+    """Test that GLiNER2RecognizerConfig.model_dump excludes None fields by default."""
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+    )
+
+    config = GLiNER2RecognizerConfig(
+        name="GLiNER2Recognizer",
+        supported_language="en",
+        model_name="fastino/gliner2-privacy-filter-PII-multi",
+    )
+    dumped = config.model_dump()
+    assert dumped["model_name"] == "fastino/gliner2-privacy-filter-PII-multi"
+    # Fields not provided should be excluded, not set to None
+    assert "threshold" not in dumped
+    assert "map_location" not in dumped
+    assert "entity_mapping" not in dumped
+
+
+def test_gliner2_recognizer_config_entity_mapping_and_supported_entities_mutually_exclusive():
+    """Test that entity_mapping and supported_entities cannot both be set."""
+    import pytest
+    from pydantic import ValidationError
+
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        GLiNER2RecognizerConfig,
+    )
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        GLiNER2RecognizerConfig(
+            name="GLiNER2Recognizer",
+            supported_language="en",
+            entity_mapping={"email": "EMAIL_ADDRESS"},
+            supported_entities=["EMAIL_ADDRESS"],
+        )
+
+
+def test_gliner2_fields_survive_registry_config_model_dump():
+    """Guard the union membership: the registry-level model_dump (used by
+    ConfigurationValidator) must not drop GLiNER2 extra fields.
+
+    If GLiNER2RecognizerConfig were absent from the RecognizerRegistryConfig
+    .recognizers union, Pydantic would serialize it via its base
+    (PredefinedRecognizerConfig) schema and silently drop model_name/
+    entity_mapping/threshold/label_descriptions -- the exact bug this fixes.
+    """
+    from presidio_analyzer.input_validation.yaml_recognizer_models import (
+        RecognizerRegistryConfig,
+    )
+
+    registry = RecognizerRegistryConfig(
+        supported_languages=["en"],
+        recognizers=[
+            {
+                "name": "GLiNER2Recognizer",
+                "type": "predefined",
+                "supported_language": "en",
+                "model_name": "fastino/gliner2-privacy-filter-PII-multi",
+                "threshold": 0.4,
+                "map_location": "cpu",
+                "entity_mapping": {"email": "EMAIL_ADDRESS"},
+                "label_descriptions": {"email": "an email address"},
+            }
+        ],
+    )
+
+    dumped = registry.model_dump()["recognizers"][0]
+    assert dumped["model_name"] == "fastino/gliner2-privacy-filter-PII-multi"
+    assert dumped["threshold"] == 0.4
+    assert dumped["map_location"] == "cpu"
+    assert dumped["entity_mapping"] == {"email": "EMAIL_ADDRESS"}
+    assert dumped["label_descriptions"] == {"email": "an email address"}
+
+
 def test_huggingface_recognizer_config_model_dump_excludes_none():
     """Test that HuggingFaceRecognizerConfig.model_dump excludes None fields by default."""
     from presidio_analyzer.input_validation.yaml_recognizer_models import (

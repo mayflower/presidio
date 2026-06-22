@@ -40,6 +40,22 @@ from .country_specific.germany.de_social_security_recognizer import (
 from .country_specific.germany.de_tax_id_recognizer import DeTaxIdRecognizer
 from .country_specific.germany.de_tax_number_recognizer import DeTaxNumberRecognizer
 from .country_specific.germany.de_vat_id_recognizer import DeVatIdRecognizer
+from .country_specific.germany.german_address_recognizer import (
+    GermanAddressRecognizer,
+)
+from .country_specific.germany.german_credit_card_recognizer import (
+    GermanCreditCardRecognizer,
+)
+from .country_specific.germany.german_honorific_person_recognizer import (
+    GermanHonorificPersonRecognizer,
+)
+from .country_specific.germany.german_phone_recognizer import GermanPhoneRecognizer
+from .country_specific.germany.german_postal_code_recognizer import (
+    GermanPostalCodeRecognizer,
+)
+from .country_specific.germany.german_username_recognizer import (
+    GermanUsernamePatternRecognizer,
+)
 from .country_specific.india import (
     InVehicleRegistrationRecognizer,
 )
@@ -147,6 +163,7 @@ from .generic.phone_recognizer import PhoneRecognizer
 from .generic.url_recognizer import UrlRecognizer
 
 # NER recognizers
+from .ner.gliner2_recognizer import GLiNER2Recognizer
 from .ner.gliner_recognizer import GLiNERRecognizer
 from .ner.huggingface_ner_recognizer import HuggingFaceNerRecognizer
 from .ner.medical_ner_recognizer import MedicalNERRecognizer
@@ -220,6 +237,7 @@ __all__ = [
     "ItPassportRecognizer",
     "InPanRecognizer",
     "GLiNERRecognizer",
+    "GLiNER2Recognizer",
     "HuggingFaceNerRecognizer",
     "PhTinRecognizer",
     "PlPeselRecognizer",
@@ -269,5 +287,11 @@ __all__ = [
     "DeLanrRecognizer",
     "DeBsnrRecognizer",
     "DeVatIdRecognizer",
+    "GermanPhoneRecognizer",
+    "GermanCreditCardRecognizer",
+    "GermanPostalCodeRecognizer",
+    "GermanAddressRecognizer",
+    "GermanUsernamePatternRecognizer",
+    "GermanHonorificPersonRecognizer",
     "DeFuehrerscheinRecognizer",
 ]

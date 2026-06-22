@@ -96,6 +96,77 @@ LOCATION, and ORGANIZATION on top of the pattern recognizers.
 | `DE_VAT_ID` | Umsatzsteuer-Identifikationsnummer | – |
 | `DE_FUEHRERSCHEIN` | Führerscheinnummer (post-2013) | – |
 
+### Optional general-PII German recognizers
+
+Presidio also ships six **optional** German recognizers for general PII. Like the
+identifier recognizers above they are **disabled by default** (`enabled: false` in
+`conf/default_recognizers.yaml`) and only run when you explicitly enable them in a
+German-language registry.
+
+| Recognizer | Entity | Detection |
+|---|---|---|
+| `GermanPhoneRecognizer` | `PHONE_NUMBER` | python-phonenumbers (region DE) + German context |
+| `GermanCreditCardRecognizer` | `CREDIT_CARD` | 13–19 digits + Luhn checksum + German context |
+| `GermanPostalCodeRecognizer` | `POSTAL_CODE` | 5-digit PLZ; stronger before a city or with PLZ context |
+| `GermanAddressRecognizer` | `LOCATION` | street suffix (Straße/Weg/Allee/…) + house number |
+| `GermanUsernamePatternRecognizer` | `USERNAME` | `@handle` or digit/underscore token + German context |
+| `GermanHonorificPersonRecognizer` | `PERSON` | Herr/Frau/Dr./Prof. + capitalized name tokens |
+
+`GermanPostalCodeRecognizer` and `GermanAddressRecognizer` default to `POSTAL_CODE`
+/ `LOCATION`; pass a `supported_entity` override (e.g. `LOCATION` / `ADDRESS`) to
+change the returned entity.
+
+#### Enabling them in YAML
+
+Create a recognizer-registry file that turns them on for German and load it with
+`RecognizerRegistryProvider`:
+
+```yaml
+# german_recognizers.yml
+supported_languages:
+  - de
+recognizers:
+  - name: GermanPhoneRecognizer
+    type: predefined
+    supported_languages: ["de"]
+  - name: GermanCreditCardRecognizer
+    type: predefined
+    supported_languages: ["de"]
+  - name: GermanPostalCodeRecognizer
+    type: predefined
+    supported_languages: ["de"]
+  - name: GermanAddressRecognizer
+    type: predefined
+    supported_languages: ["de"]
+  - name: GermanUsernamePatternRecognizer
+    type: predefined
+    supported_languages: ["de"]
+  - name: GermanHonorificPersonRecognizer
+    type: predefined
+    supported_languages: ["de"]
+```
+
+```python
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_analyzer.recognizer_registry import RecognizerRegistryProvider
+
+nlp_engine = NlpEngineProvider(conf_file="spacy_en_de.yaml").create_engine()
+registry = RecognizerRegistryProvider(
+    conf_file="german_recognizers.yml"
+).create_recognizer_registry()
+
+analyzer = AnalyzerEngine(
+    nlp_engine=nlp_engine, registry=registry, supported_languages=["de"]
+)
+results = analyzer.analyze(
+    text="Herr Müller, Tel +49 30 12345678", language="de"
+)
+```
+
+Alternatively, when you load the bundled `conf/default_recognizers.yaml`, flip
+`enabled: true` on the `German…Recognizer` entries to turn them on.
+
 ## Results
 
 Formal evaluation against a labelled German dataset has not yet been performed.
