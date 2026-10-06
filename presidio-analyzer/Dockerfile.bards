@@ -25,7 +25,7 @@ ARG BARDS_MODEL=bardsai/eu-pii-anonimization-multilang
 ARG BARDS_BACKEND=onnx
 
 ENV PIP_NO_CACHE_DIR=1
-ENV POETRY_VIRTUALENVS_CREATE=false
+ENV UV_PROJECT_ENVIRONMENT=/usr/local
 ENV PORT=3000
 # One worker by default; the ORT session is shared across languages in-process.
 ENV WORKERS=1
@@ -59,17 +59,18 @@ COPY ${NLP_CONF_FILE} /app/${NLP_CONF_FILE}
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./pyproject.toml /app/
+COPY ./pyproject.toml ./uv.lock /app/
 # Install the server extra plus the backend extra: bards-onnx (ONNX Runtime +
 # transformers tokenizer, torch-free) for the default onnx backend, or
 # transformers (which pulls torch) for the pytorch backend.
-RUN pip install poetry==2.3.2 \
-    && poetry install --no-root --only=main -E server \
-       $([ "${BARDS_BACKEND}" = "pytorch" ] && echo "-E transformers" || echo "-E bards-onnx")
+RUN pip install uv==0.11.6 \
+    && uv sync --locked --no-cache --no-default-groups --no-install-project \
+       --extra server \
+       $([ "${BARDS_BACKEND}" = "pytorch" ] && echo "--extra transformers" || echo "--extra bards-onnx")
 
 # spaCy tokenization models declared in the NLP config
 COPY ./install_nlp_models.py /app/
-RUN poetry run python install_nlp_models.py \
+RUN python install_nlp_models.py \
     --conf_file ${NLP_CONF_FILE} \
     --analyzer_conf_file ${ANALYZER_CONF_FILE}
 
@@ -80,7 +81,7 @@ COPY . /app/
 # quantized onnx/model_quantized.onnx for the default onnx backend, the PyTorch
 # checkpoint for pytorch; HF_HUB_OFFLINE=1 above then guarantees no runtime
 # download.
-RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 poetry run python -c \
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \
     "cls = 'BardsEuPiiRecognizer' if '${BARDS_BACKEND}' == 'pytorch' else 'BardsEuPiiOnnxRecognizer'; \
 mod = __import__('presidio_analyzer.predefined_recognizers', fromlist=[cls]); \
 getattr(mod, cls)(model_name='${BARDS_MODEL}')"
